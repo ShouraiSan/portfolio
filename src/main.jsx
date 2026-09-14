@@ -75,7 +75,7 @@ function App() {
     <section className="about section shell" id="about">
       <div className="section-kicker reveal"><span>01</span> PROFILE / 关于我</div>
       <div className="about-grid">
-        <div className="portrait reveal"><img src="/assets/resume-2.jpeg" alt="姜来"/><span>JIANG LAI</span></div>
+        <div className="portrait reveal"><img src="/assets/resume-2.jpeg" /><span>JIANG LAI</span></div>
         <div className="intro reveal">
           <h2>我用导演的视角思考，<br/>用设计与技术完成表达。</h2>
           <p>南京传媒学院广播电视编导专业，现任校融媒体中心摄制部部长。我是一名兼具导演思维与制片执行力的全流程创作者，擅长从创意策划到落地宣发的内容闭环，也持续探索 AIGC 在视觉设计中的真实价值。</p>
