@@ -2,12 +2,22 @@ const media = new Map([
   ['2026japan_tour.mp4', '2026japan_tour.mp4'],
   ['Hokkaidou_tour（4k）.mp4', 'Hokkaidou_tour（4k）.mp4'],
   ['KANSAI(4k).mp4', 'KANSAI(4k).mp4'],
-  ['未知彼时花开名.mov', '未知彼时花开名.mov'],
+  ['未知彼时花开名.mp4', '未知彼时花开名.mp4'],
 ]);
 
-function corsHeaders(request, env) {
-  const origin = request.headers.get('Origin');
-  const allowed = (env.ALLOWED_ORIGINS || '').split(',').map((item) => item.trim());
+function trustedOrigins(env) {
+  return (env.ALLOWED_ORIGINS || '').split(',').map((item) => item.trim()).filter(Boolean);
+}
+
+function requestOrigin(value) {
+  try {
+    return value ? new URL(value).origin : null;
+  } catch {
+    return null;
+  }
+}
+
+function corsHeaders(origin, allowed) {
   return origin && allowed.includes(origin) ? {
     'Access-Control-Allow-Origin': origin,
     'Access-Control-Allow-Methods': 'GET, HEAD, OPTIONS',
@@ -17,11 +27,28 @@ function corsHeaders(request, env) {
   } : {};
 }
 
+function isTrustedMediaRequest(request, allowed) {
+  const origin = request.headers.get('Origin');
+  const refererOrigin = requestOrigin(request.headers.get('Referer'));
+
+  // Require a browser-originated request from a known site. A present Origin
+  // must also match, which rejects requests manually forged from another site.
+  return Boolean(refererOrigin && allowed.includes(refererOrigin))
+    && (!origin || allowed.includes(origin));
+}
+
 export default {
   async fetch(request, env) {
-    const cors = corsHeaders(request, env);
-    if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: cors });
+    const allowed = trustedOrigins(env);
+    const origin = request.headers.get('Origin');
+    const cors = corsHeaders(origin, allowed);
+    if (request.method === 'OPTIONS') {
+      return allowed.includes(origin)
+        ? new Response(null, { status: 204, headers: cors })
+        : new Response('Forbidden', { status: 403 });
+    }
     if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed', { status: 405 });
+    if (!isTrustedMediaRequest(request, allowed)) return new Response('Forbidden', { status: 403 });
 
     const url = new URL(request.url);
     const slug = decodeURIComponent(url.pathname.replace(/^\/media\/?/, ''));
@@ -36,6 +63,7 @@ export default {
     headers.set('ETag', object.httpEtag);
     headers.set('Accept-Ranges', 'bytes');
     headers.set('Cache-Control', 'public, max-age=3600');
+    headers.set('X-Content-Type-Options', 'nosniff');
 
     const range = object.range;
     if (range) {

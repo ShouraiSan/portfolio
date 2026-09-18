@@ -9,4 +9,6 @@
 5. 运行根目录的 `publish-site.ps1`，重新构建并上传网站。
 6. 确认播放正常后，在 Cloudflare R2 设置中关闭 `r2.dev` 公共访问。
 
-`ALLOWED_ORIGINS` 只能限制普通浏览器跨域调用，不能作为付费或私密内容的强身份认证。公开作品集中的视频仍然可被观看者通过开发者工具找到。若需要严格访问控制，应在 Worker 中增加登录鉴权或短期签名令牌。
+Worker 会拒绝空 `Referer`、非白名单 `Referer`，以及不在 `ALLOWED_ORIGINS` 中的 `Origin`。因此在 `wrangler.toml` 里保留 GitHub Pages 与本地预览地址；若改用自定义域名，需要同步加入该域名。
+
+`Referer` / `Origin` 只适合降低直链和热链，不是强鉴权：它们可以被非浏览器客户端伪造，且无法可信地限制任意客户端 IP。公开作品集中的视频仍然可能被熟练用户通过开发者工具找到。若需要真正限制访问，应在 Worker 中增加 Cloudflare Access、登录会话或短期签名令牌，并关闭 R2 的 `r2.dev` 公共访问。
