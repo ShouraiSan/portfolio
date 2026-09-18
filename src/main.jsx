@@ -35,8 +35,8 @@ const projects = [
     index: '04',
     title: '未知彼时花开名',
     type: '青春校园微电影 / 导演',
-    mediaPath: '%E6%9C%AA%E7%9F%A5%E5%BD%BC%E6%97%B6%E8%8A%B1%E5%BC%80%E5%90%8D.mov',
-    mimeType: 'video/quicktime',
+    mediaPath: '%E6%9C%AA%E7%9F%A5%E5%BD%BC%E6%97%B6%E8%8A%B1%E5%BC%80%E5%90%8D.mp4',
+    mimeType: 'video/mp4',
     image: `${import.meta.env.BASE_URL}assets/unknown-bloom-cover.jpg`,
   },
 ];
@@ -142,7 +142,7 @@ function App() {
     {activeVideo && <div className="video-modal" role="dialog" aria-modal="true" aria-label={activeVideo.title} onMouseDown={(event) => event.target === event.currentTarget && setActiveVideo(null)}>
       <div className="video-dialog">
         <div className="video-bar"><div><span>{activeVideo.index}</span><strong>{activeVideo.title}</strong></div><button type="button" onClick={() => setActiveVideo(null)} aria-label="关闭视频"><X/></button></div>
-        <div className="video-frame"><video key={activeVideo.mediaPath} controls autoPlay playsInline preload="metadata"><source src={`${mediaBase}/${activeVideo.mediaPath}`} type={activeVideo.mimeType}/>当前浏览器无法播放此视频。</video></div>
+        <div className="video-frame"><video key={activeVideo.mediaPath} controls controlsList="nodownload" disablePictureInPicture autoPlay playsInline preload="metadata" onContextMenu={(event) => event.preventDefault()}><source src={`${mediaBase}/${activeVideo.mediaPath}`} type={activeVideo.mimeType}/>当前浏览器无法播放此视频。</video></div>
       </div>
     </div>}
   </main>;
