@@ -3,3 +3,5 @@ node_modules-broken/
 dist/
 .pnpm-store/
 .DS_Store
+.env.local
+.env.production

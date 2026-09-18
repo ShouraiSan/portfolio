@@ -3,27 +3,41 @@ import { createRoot } from 'react-dom/client';
 import { ArrowDown, ArrowRight, ArrowUpRight, Mail, Menu, Play, X } from 'lucide-react';
 import './styles.css';
 
+const publicMediaBase = 'https://pub-6ca040f00ff34054a0359db893bc1559.r2.dev';
+const mediaBase = (import.meta.env.VITE_MEDIA_BASE_URL || publicMediaBase).replace(/\/$/, '');
+
 const projects = [
   {
     index: '01',
     title: '带上她的眼睛',
     type: '短片 / 导演・制片・策划',
-    bvid: 'BV1DepcztECP',
+    mediaPath: 'KANSAI(4k).mp4',
+    mimeType: 'video/mp4',
     image: 'https://images.unsplash.com/photo-1519608487953-e999c86e7455?auto=format&fit=crop&w=1800&q=88',
   },
   {
     index: '02',
     title: '我的北海道记忆',
     type: '影像叙事 / 剪辑・调色',
-    bvid: 'BV1EnjXzqEna',
+    mediaPath: 'Hokkaidou_tour%EF%BC%884k%EF%BC%89.mp4',
+    mimeType: 'video/mp4',
     image: 'https://images.unsplash.com/photo-1490806843957-31f4c9a91c65?auto=format&fit=crop&w=1800&q=88',
   },
   {
     index: '03',
     title: '北海道与关西之旅',
     type: '旅行影像 / 导演・摄影・剪辑',
-    bvid: 'BV17pK86hEqV',
+    mediaPath: '2026japan_tour.mp4',
+    mimeType: 'video/mp4',
     image: 'https://images.unsplash.com/photo-1531058020387-3be344556be6?auto=format&fit=crop&w=1800&q=88',
+  },
+  {
+    index: '04',
+    title: '未知彼时花开名',
+    type: '青春校园微电影 / 导演',
+    mediaPath: '%E6%9C%AA%E7%9F%A5%E5%BD%BC%E6%97%B6%E8%8A%B1%E5%BC%80%E5%90%8D.mov',
+    mimeType: 'video/quicktime',
+    image: 'https://images.unsplash.com/photo-1523050854058-8df90110c9f1?auto=format&fit=crop&w=1800&q=88',
   },
 ];
 
@@ -93,7 +107,7 @@ function App() {
         </div>
       </div>
       <div className="stats reveal">
-        <div><strong>03</strong><span>执导 / 制片短片</span></div>
+        <div><strong>04</strong><span>执导 / 制片短片</span></div>
         <div><strong>10+</strong><span>独立发布视频</span></div>
         <div><strong>1W+</strong><span>累计内容播放</span></div>
         <div><strong>06</strong><span>专业软件与工具</span></div>
@@ -128,7 +142,7 @@ function App() {
     {activeVideo && <div className="video-modal" role="dialog" aria-modal="true" aria-label={activeVideo.title} onMouseDown={(event) => event.target === event.currentTarget && setActiveVideo(null)}>
       <div className="video-dialog">
         <div className="video-bar"><div><span>{activeVideo.index}</span><strong>{activeVideo.title}</strong></div><button type="button" onClick={() => setActiveVideo(null)} aria-label="关闭视频"><X/></button></div>
-        <div className="video-frame"><iframe src={`https://player.bilibili.com/player.html?bvid=${activeVideo.bvid}&page=1&high_quality=1&danmaku=0&autoplay=1`} title={activeVideo.title} allow="autoplay; fullscreen; picture-in-picture" allowFullScreen/></div>
+        <div className="video-frame"><video key={activeVideo.mediaPath} controls autoPlay playsInline preload="metadata"><source src={`${mediaBase}/${activeVideo.mediaPath}`} type={activeVideo.mimeType}/>当前浏览器无法播放此视频。</video></div>
       </div>
     </div>}
   </main>;

@@ -24,6 +24,8 @@ jobs:
           node-version: 20
       - run: npm install --no-package-lock
       - run: npm run build
+        env:
+          VITE_MEDIA_BASE_URL: ${{ vars.VITE_MEDIA_BASE_URL }}
       - uses: actions/upload-pages-artifact@v3
         with:
           path: dist

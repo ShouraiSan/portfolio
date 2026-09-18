@@ -1,0 +1,10 @@
+name = "portfolio-media"
+main = "src/index.js"
+compatibility_date = "2026-09-19"
+
+[[r2_buckets]]
+binding = "MEDIA"
+bucket_name = "YOUR_PRIVATE_BUCKET_NAME"
+
+[vars]
+ALLOWED_ORIGINS = "https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173"
