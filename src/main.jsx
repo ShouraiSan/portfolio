@@ -3,8 +3,8 @@ import { createRoot } from 'react-dom/client';
 import { ArrowDown, ArrowRight, ArrowUpRight, Mail, Menu, Play, X } from 'lucide-react';
 import './styles.css';
 
-const publicMediaBase = 'https://pub-6ca040f00ff34054a0359db893bc1559.r2.dev';
-const mediaBase = (import.meta.env.VITE_MEDIA_BASE_URL || publicMediaBase).replace(/\/$/, '');
+const workerMediaBase = 'https://portfolio-media.jlmafuture.workers.dev/media';
+const mediaBase = (import.meta.env.VITE_MEDIA_BASE_URL || workerMediaBase).replace(/\/$/, '');
 
 const projects = [
   {
