@@ -15,3 +15,7 @@
 /* On small screens, remove the desktop stagger and keep every project card aligned. */
 @media(max-width:900px){.projects{display:grid;grid-template-columns:minmax(0,1fr);gap:16px}.projects .project,.projects .project:nth-child(2),.projects .project:nth-child(3),.projects .project:nth-child(4){grid-column:auto;width:100%;height:auto;min-height:0;aspect-ratio:4/5;margin:0!important}.project-copy{left:24px;bottom:24px}.project-play{right:24px;bottom:28px}}
 @media(max-width:520px){.projects{gap:12px}.projects .project,.projects .project:nth-child(2),.projects .project:nth-child(3),.projects .project:nth-child(4){aspect-ratio:3/4}.project-copy{left:20px;bottom:20px}.project-play{right:20px;bottom:23px}}
+
+/* Keep the full video control bar visible on short desktop viewports. */
+.video-modal{padding:clamp(12px,3vh,36px)}.video-dialog{width:min(1280px,94vw);max-height:calc(100vh - clamp(24px,6vh,72px));display:flex;flex-direction:column}.video-bar{flex:0 0 60px;height:60px}.video-frame{width:100%;height:min(calc(100vh - clamp(84px,9vh,132px)),calc(94vw * .5625));aspect-ratio:auto;flex:0 1 auto}.video-frame video{object-fit:contain}
+@media(max-width:700px){.video-dialog{width:100%;max-height:calc(100vh - 24px)}.video-bar{flex-basis:54px;height:54px}.video-frame{height:min(calc(100vh - 78px),calc(100vw * .5625))}}
