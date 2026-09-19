@@ -81,9 +81,7 @@ function App() {
     </header>
 
     <section className="hero" id="top">
-      <video autoPlay muted loop playsInline poster="https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&w=2000&q=85">
-        <source src="https://cdn.coverr.co/videos/coverr-a-man-working-on-his-laptop-1575/1080p.mp4" type="video/mp4" />
-      </video>
+      <div className="hero-poster" aria-hidden="true"/>
       <div className="hero-shade"/>
       <div className="hero-content shell">
         <p className="eyebrow">Visual · AI · Brand Designer</p>

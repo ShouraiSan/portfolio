@@ -19,3 +19,6 @@
 /* Keep the full video control bar visible on short desktop viewports. */
 .video-modal{padding:clamp(12px,3vh,36px)}.video-dialog{width:min(1280px,94vw);max-height:calc(100vh - clamp(24px,6vh,72px));display:flex;flex-direction:column}.video-bar{flex:0 0 60px;height:60px}.video-frame{width:100%;height:min(calc(100vh - clamp(84px,9vh,132px)),calc(94vw * .5625));aspect-ratio:auto;flex:0 1 auto}.video-frame video{object-fit:contain}
 @media(max-width:700px){.video-dialog{width:100%;max-height:calc(100vh - 24px)}.video-bar{flex-basis:54px;height:54px}.video-frame{height:min(calc(100vh - 78px),calc(100vw * .5625))}}
+
+/* Static hero artwork replaces the retired Coverr background video. */
+.hero-poster{position:absolute;inset:0;background:url('https://images.unsplash.com/photo-1485846234645-a62644f84728?auto=format&fit=crop&w=2000&q=85') center/cover no-repeat;filter:saturate(.6) contrast(1.08)}
