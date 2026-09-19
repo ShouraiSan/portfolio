@@ -37,6 +37,13 @@ function isTrustedMediaRequest(request, allowed) {
     && (!origin || allowed.includes(origin));
 }
 
+function portfolioUrl(request, env) {
+  const site = new URL(env.PORTFOLIO_ORIGIN);
+  const requestUrl = new URL(request.url);
+  const path = requestUrl.pathname === '/' ? '' : requestUrl.pathname.replace(/^\//, '');
+  return new URL(path + requestUrl.search, site);
+}
+
 export default {
   async fetch(request, env) {
     const allowed = trustedOrigins(env);
@@ -48,9 +55,22 @@ export default {
         : new Response('Forbidden', { status: 403 });
     }
     if (!['GET', 'HEAD'].includes(request.method)) return new Response('Method not allowed', { status: 405 });
-    if (!isTrustedMediaRequest(request, allowed)) return new Response('Forbidden', { status: 403 });
 
     const url = new URL(request.url);
+    if (!url.pathname.startsWith('/media/')) {
+      const upstream = await fetch(portfolioUrl(request, env), {
+        method: request.method,
+        headers: { 'User-Agent': 'Kensym Portfolio Worker' },
+      });
+      const headers = new Headers(upstream.headers);
+      headers.set('Cache-Control', 'public, max-age=300');
+      return new Response(request.method === 'HEAD' ? null : upstream.body, {
+        status: upstream.status,
+        headers,
+      });
+    }
+
+    if (!isTrustedMediaRequest(request, allowed)) return new Response('Forbidden', { status: 403 });
     const slug = decodeURIComponent(url.pathname.replace(/^\/media\/?/, ''));
     const key = media.get(slug);
     if (!key) return new Response('Not found', { status: 404, headers: cors });
