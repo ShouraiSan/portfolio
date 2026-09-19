@@ -44,6 +44,11 @@ function portfolioUrl(request, env) {
   return new URL(path + requestUrl.search, site);
 }
 
+function applySecurityHeaders(headers) {
+  headers.set('Strict-Transport-Security', 'max-age=31536000; includeSubDomains');
+  headers.set('X-Content-Type-Options', 'nosniff');
+}
+
 export default {
   async fetch(request, env) {
     const allowed = trustedOrigins(env);
@@ -64,6 +69,7 @@ export default {
       });
       const headers = new Headers(upstream.headers);
       headers.set('Cache-Control', 'public, max-age=300');
+      applySecurityHeaders(headers);
       return new Response(request.method === 'HEAD' ? null : upstream.body, {
         status: upstream.status,
         headers,
@@ -83,7 +89,7 @@ export default {
     headers.set('ETag', object.httpEtag);
     headers.set('Accept-Ranges', 'bytes');
     headers.set('Cache-Control', 'public, max-age=3600');
-    headers.set('X-Content-Type-Options', 'nosniff');
+    applySecurityHeaders(headers);
 
     const range = object.range;
     if (range) {
