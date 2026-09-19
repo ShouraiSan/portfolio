@@ -2,6 +2,10 @@ name = "portfolio-media"
 main = "src/index.js"
 compatibility_date = "2026-09-18"
 
+routes = [
+  { pattern = "kensym15.dpdns.org", custom_domain = true }
+]
+
 [[r2_buckets]]
 binding = "MEDIA"
 bucket_name = "video"

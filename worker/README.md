@@ -4,7 +4,7 @@
 
 1. 将 `wrangler.toml` 中的 `YOUR_PRIVATE_BUCKET_NAME` 改为实际存储桶名称。
 2. 在此目录运行 `npx wrangler login`，然后运行 `npx wrangler deploy`。
-3. 复制 Worker 地址。本地测试时，将项目根目录的 `.env.example` 复制为 `.env.production`，把 `VITE_MEDIA_BASE_URL` 设置为 `https://你的-worker.workers.dev/media`。
+3. Worker 已绑定自定义域名时，使用 `https://kensym15.dpdns.org/media` 作为媒体地址。本地测试时，将项目根目录的 `.env.example` 复制为 `.env.production`。
 4. GitHub Pages 部署时，在仓库 `Settings → Secrets and variables → Actions → Variables` 中新增 `VITE_MEDIA_BASE_URL`，值为同一个 Worker `/media` 地址。
 5. 运行根目录的 `publish-site.ps1`，重新构建并上传网站。
 6. 确认播放正常后，在 Cloudflare R2 设置中关闭 `r2.dev` 公共访问。

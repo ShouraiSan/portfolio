@@ -3,7 +3,7 @@ import { createRoot } from 'react-dom/client';
 import { ArrowDown, ArrowRight, ArrowUpRight, Mail, Menu, Play, X } from 'lucide-react';
 import './styles.css';
 
-const workerMediaBase = 'https://portfolio-media.jlmafuture.workers.dev/media';
+const workerMediaBase = 'https://kensym15.dpdns.org/media';
 const mediaBase = (import.meta.env.VITE_MEDIA_BASE_URL || workerMediaBase).replace(/\/$/, '');
 
 const projects = [
