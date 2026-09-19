@@ -88,7 +88,11 @@ export default {
     object.writeHttpMetadata(headers);
     headers.set('ETag', object.httpEtag);
     headers.set('Accept-Ranges', 'bytes');
-    headers.set('Cache-Control', 'public, max-age=3600');
+    // Keep immutable video bytes in the browser and Cloudflare caches. Range
+    // requests still let playback start without downloading the whole file.
+    headers.set('Cache-Control', 'public, max-age=604800, stale-while-revalidate=86400');
+    headers.set('CDN-Cache-Control', 'public, max-age=2592000');
+    headers.set('Content-Disposition', 'inline');
     applySecurityHeaders(headers);
 
     const range = object.range;
