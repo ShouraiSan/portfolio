@@ -107,7 +107,7 @@ function App() {
       <div className="stats reveal">
         <div><strong>04</strong><span>执导 / 制片短片</span></div>
         <div><strong>10+</strong><span>独立发布视频</span></div>
-        <div><strong>1W+</strong><span>累计内容播放</span></div>
+        <div><strong>10W+</strong><span>累计内容播放</span></div>
         <div><strong>06</strong><span>专业软件与工具</span></div>
       </div>
       <div className="about-capabilities reveal">
