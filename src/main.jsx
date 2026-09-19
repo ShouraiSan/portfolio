@@ -37,7 +37,7 @@ const projects = [
     type: '青春校园微电影 / 导演',
     mediaPath: '%E6%9C%AA%E7%9F%A5%E5%BD%BC%E6%97%B6%E8%8A%B1%E5%BC%80%E5%90%8D.mp4',
     mimeType: 'video/mp4',
-    image: `${import.meta.env.BASE_URL}assets/unknown-bloom-cover.jpg`,
+    image: 'https://images.unsplash.com/photo-1503676260728-1c00da094a0b?auto=format&fit=crop&w=1800&q=88',
   },
 ];
 
