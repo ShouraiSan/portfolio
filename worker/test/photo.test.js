@@ -1,6 +1,14 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import worker, { createPhotoSignature, normalizePhotoRequest, verifyPhotoSignature } from '../src/index.js';
+import worker, {
+  THUMBNAIL_WIDTHS,
+  createPhotoSignature,
+  generatePhotoThumbnails,
+  normalizePhotoRequest,
+  queueSourceKey,
+  thumbnailKey,
+  verifyPhotoSignature,
+} from '../src/index.js';
 import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
@@ -51,9 +59,47 @@ test('large catalogs expose one signed original JPG URL per photo', async () => 
   assert.deepEqual(Object.keys(image.lightbox), ['jpeg']);
   assert.equal(image.thumbnail.jpeg[0].url, body.photos[0].original.url);
   assert.equal(image.lightbox.jpeg[0].url, body.photos[0].original.url);
+  assert.deepEqual(body.photos[0].thumbnails.avif.map((item) => item.width), THUMBNAIL_WIDTHS);
   assert.equal(new URL(body.photos[0].original.url).searchParams.has('fmt'), false);
   assert.equal(JSON.stringify(body).includes('objectKey'), false);
   clearPhotoCatalogCache();
+});
+
+test('thumbnail queue job writes fixed AVIF sizes without changing the original', async () => {
+  const puts = [];
+  const transforms = [];
+  const source = { body: new Uint8Array([1, 2, 3]), size: 3 };
+  const bucket = {
+    get: async (key) => key === '风光/original.jpg' ? source : null,
+    put: async (key, body, options) => puts.push({ key, body, options }),
+  };
+  const images = {
+    input: () => ({
+      transform: ({ width, fit }) => {
+        transforms.push({ width, fit });
+        return { output: async ({ format, quality }) => ({ image: () => new Uint8Array([width]), format, quality }) };
+      },
+    }),
+  };
+  const result = await generatePhotoThumbnails('风光/original.jpg', { photo: bucket, IMAGES: images });
+  assert.deepEqual(result.generated, THUMBNAIL_WIDTHS.map((width) => thumbnailKey('风光/original.jpg', width)));
+  assert.deepEqual(transforms, THUMBNAIL_WIDTHS.map((width) => ({ width, fit: 'scale-down' })));
+  assert.deepEqual(puts.map(({ key }) => key), result.generated);
+  assert.ok(puts.every(({ options }) => options.httpMetadata.contentType === 'image/avif'));
+  assert.ok(puts.every(({ options }) => options.httpMetadata.cacheControl.includes('max-age=31536000')));
+});
+
+test('thumbnail queue acknowledges unrelated events and retries conversion failures', async () => {
+  assert.equal(queueSourceKey({ body: { object: { key: '_thumbnails/320/photo.avif' } } }), '');
+  assert.equal(queueSourceKey({ body: { object: { key: '风光/photo.jpg' } } }), '风光/photo.jpg');
+  let acknowledged = 0;
+  let retried = 0;
+  await worker.queue({ messages: [
+    { body: { object: { key: '_thumbnails/320/photo.avif' } }, ack: () => { acknowledged += 1; } },
+    { body: { object: { key: '风光/photo.jpg' } }, retry: () => { retried += 1; } },
+  ] }, { photo: { get: async () => null } });
+  assert.equal(acknowledged, 1);
+  assert.equal(retried, 1);
 });
 
 test('signed image route returns the R2 JPG bytes without Images transformation', async () => {
