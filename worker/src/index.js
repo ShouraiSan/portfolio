@@ -104,7 +104,33 @@ function constantTimeEqual(left, right) {
 }
 
 function signaturePayload(assetId, variant) {
-  return [assetId, variant.mode, variant.width, variant.quality, variant.format, variant.fit, variant.version, variant.exp].join('|');
+  return [assetId, variant.mode, variant.width, variant.quality, variant.format, variant.fit, variant.version, variant.exp, variant.ref || ''].join('|');
+}
+
+async function referenceKey(secret) {
+  const digest = await crypto.subtle.digest('SHA-256', encoder.encode(`photo-reference|${secret}`));
+  return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
+}
+
+async function createPhotoReference(photo, secret) {
+  const iv = crypto.getRandomValues(new Uint8Array(12));
+  const plaintext = encoder.encode(JSON.stringify({ key: photo.objectKey, version: photo.version }));
+  const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await referenceKey(secret), plaintext);
+  const payload = new Uint8Array(iv.length + ciphertext.byteLength);
+  payload.set(iv);
+  payload.set(new Uint8Array(ciphertext), iv.length);
+  return base64Url(payload);
+}
+
+async function readPhotoReference(value, secret) {
+  try {
+    if (!/^[A-Za-z0-9_-]{20,1024}$/.test(value || '')) return null;
+    const binary = atob(value.replace(/-/g, '+').replace(/_/g, '/') + '='.repeat((4 - value.length % 4) % 4));
+    const payload = Uint8Array.from(binary, (character) => character.charCodeAt(0));
+    const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv: payload.slice(0, 12) }, await referenceKey(secret), payload.slice(12));
+    const reference = JSON.parse(new TextDecoder().decode(plaintext));
+    return typeof reference.key === 'string' && typeof reference.version === 'string' ? reference : null;
+  } catch { return null; }
 }
 
 export function normalizeVariant(searchParams) {
@@ -112,12 +138,13 @@ export function normalizeVariant(searchParams) {
     mode: searchParams.get('mode') || '', width: Number(searchParams.get('w')),
     quality: Number(searchParams.get('q')), format: searchParams.get('fmt') || '',
     fit: searchParams.get('fit') || '', version: searchParams.get('v') || '',
-    exp: Number(searchParams.get('exp')),
+    exp: Number(searchParams.get('exp')), ref: searchParams.get('ref') || '',
   };
   const preset = VARIANTS[variant.mode];
   if (!preset || !preset.widths.includes(variant.width) || !preset.qualities.includes(variant.quality)
     || !FORMATS.includes(variant.format) || !preset.fits.includes(variant.fit)
-    || !/^[A-Za-z0-9._-]{1,40}$/.test(variant.version) || !Number.isSafeInteger(variant.exp)) return null;
+    || !/^[A-Za-z0-9._-]{1,40}$/.test(variant.version) || !Number.isSafeInteger(variant.exp)
+    || !/^[A-Za-z0-9_-]{20,1024}$/.test(variant.ref)) return null;
   return variant;
 }
 
@@ -137,10 +164,10 @@ async function rateLimit(request, env) {
   return (await env.PHOTO_RATE_LIMITER.limit({ key })).success;
 }
 
-async function signedImageUrl(baseUrl, photo, mode, width, format, quality, fit, exp, secret) {
-  const variant = { mode, width, format, quality, fit, version: photo.version, exp };
+async function signedImageUrl(baseUrl, photo, mode, width, format, quality, fit, exp, ref, secret) {
+  const variant = { mode, width, format, quality, fit, version: photo.version, exp, ref };
   const url = new URL(`${baseUrl}/photo/image/${photo.assetId}`);
-  url.search = new URLSearchParams({ mode, w: String(width), q: String(quality), fmt: format, fit, v: photo.version, exp: String(exp), sig: await createPhotoSignature(photo.assetId, variant, secret) });
+  url.search = new URLSearchParams({ mode, w: String(width), q: String(quality), fmt: format, fit, v: photo.version, exp: String(exp), ref, sig: await createPhotoSignature(photo.assetId, variant, secret) });
   return { width, url: url.toString() };
 }
 
@@ -151,11 +178,12 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
     width: photo.width, height: photo.height, focalPoint: photo.focalPoint, pending: photo.pending,
   };
   if (photo.pending) return result;
+  const ref = await createPhotoReference(photo, secret);
   result.images = {};
   for (const [mode, preset] of Object.entries(VARIANTS)) {
     result.images[mode] = {};
     const quality = preset.qualities.at(-1);
-    for (const format of FORMATS) result.images[mode][format] = await Promise.all(preset.widths.map((width) => signedImageUrl(baseUrl, photo, mode, width, format, quality, preset.fits[0], exp, secret)));
+    for (const format of FORMATS) result.images[mode][format] = await Promise.all(preset.widths.map((width) => signedImageUrl(baseUrl, photo, mode, width, format, quality, preset.fits[0], exp, ref, secret)));
   }
   return result;
 }
@@ -182,9 +210,8 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const variant = normalizeVariant(url.searchParams);
   if (!variant || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
   if (!await verifyPhotoSignature(assetId, variant, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
-  const catalog = await loadPhotoCatalog(env, demoCatalog);
-  const photo = catalog.photosById.get(assetId);
-  if (!photo || photo.version !== variant.version || photo.pending) return jsonResponse({ error: 'Image not found' }, 404, cors);
+  const reference = await readPhotoReference(variant.ref, env.PHOTO_SIGNING_SECRET);
+  if (!reference || reference.version !== variant.version) return jsonResponse({ error: 'Image not found' }, 404, cors);
   if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
 
   const canonicalUrl = new URL(url);
@@ -196,7 +223,7 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const cached = cache ? await cache.match(cacheKey) : null;
   if (cached) return request.method === 'HEAD' ? new Response(null, cached) : cached;
 
-  const object = await env.photo.get(photo.objectKey);
+  const object = await env.photo.get(reference.key);
   if (!object) return jsonResponse({ error: 'Image not found' }, 404, cors);
   let output;
   try { output = await transformPhoto(object, env, variant); }
