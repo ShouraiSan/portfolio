@@ -79,7 +79,8 @@ function cameraFor(exif, custom) {
 
 async function readImageMetadata(env, object) {
   const custom = object.customMetadata || {};
-  const needsBinary = !(custom.width && custom.height && custom.year && custom.camera && custom.lens && custom.title);
+  const allowExifScan = env.PHOTO_EXIF_SCAN === 'true';
+  const needsBinary = allowExifScan && !(custom.width && custom.height && custom.year && custom.camera && custom.lens && custom.title);
   let buffer;
   let exif = {};
   if (needsBinary) {

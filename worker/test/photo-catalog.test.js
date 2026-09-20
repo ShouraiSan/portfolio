@@ -16,6 +16,7 @@ test('catalog derives category, title, dimensions, and private asset id from R2 
   const image = pngHeader(1600, 1200);
   const env = {
     PHOTO_SIGNING_SECRET: 'catalog-test-secret',
+    PHOTO_EXIF_SCAN: 'true',
     photo: {
       list: async () => ({
         objects: [{
@@ -40,6 +41,26 @@ test('catalog derives category, title, dimensions, and private asset id from R2 
   assert.equal(catalog.photos[0].height, 1200);
   assert.match(catalog.photos[0].assetId, /^[0-9a-f-]{36}$/);
   assert.notEqual(catalog.photos[0].assetId, catalog.photos[0].objectKey);
+});
+
+test('production catalog can skip EXIF parsing to stay within Worker CPU limits', async () => {
+  clearPhotoCatalogCache();
+  let reads = 0;
+  const env = {
+    PHOTO_SIGNING_SECRET: 'catalog-test-secret',
+    photo: {
+      list: async () => ({
+        objects: [{ key: '街头/new_upload.jpg', size: 100, etag: 'etag-002', uploaded: new Date('2026-09-20T00:00:00Z'), customMetadata: {} }],
+        truncated: false,
+      }),
+      get: async () => { reads += 1; return null; },
+    },
+  };
+  const catalog = await loadPhotoCatalog(env, null);
+  assert.equal(reads, 0);
+  assert.equal(catalog.photos[0].category, '街头');
+  assert.equal(catalog.photos[0].title, 'new upload');
+  assert.equal(catalog.photos[0].year, '2026');
 });
 
 test('EXIF years outside the plausible range fall back to the upload year', () => {
