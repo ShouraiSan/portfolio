@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import worker, { createPhotoSignature, normalizeVariant, verifyPhotoSignature } from '../src/index.js';
+import worker, { createPhotoSignature, normalizeVariant, transformPhoto, verifyPhotoSignature } from '../src/index.js';
 
 const secret = 'test-signing-secret';
 const opaqueRef = 'abcdefghijklmnopqrstuvwxyz0123456789_-';
@@ -38,6 +38,24 @@ test('variant whitelist accepts presets and rejects arbitrary dimensions', () =>
   const invalid = new URLSearchParams(`mode=thumbnail&w=769&q=76&fmt=webp&fit=cover&v=demo-1&exp=2000000000&ref=${opaqueRef}`);
   assert.equal(normalizeVariant(valid).width, 768);
   assert.equal(normalizeVariant(invalid), null);
+});
+
+test('Cloudflare Images receives MIME output formats', async () => {
+  let outputOptions;
+  const pipeline = {
+    transform: () => pipeline,
+    output: (options) => { outputOptions = options; return pipeline; },
+  };
+  const envWithImages = { IMAGES: { input: () => pipeline } };
+
+  await transformPhoto({ body: new ReadableStream() }, envWithImages, {
+    width: 768,
+    fit: 'cover',
+    format: 'webp',
+    quality: 76,
+  });
+
+  assert.deepEqual(outputOptions, { format: 'image/webp', quality: 76 });
 });
 
 test('signatures reject expiry and tampering', async () => {

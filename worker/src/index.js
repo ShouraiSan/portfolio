@@ -30,6 +30,11 @@ const VARIANTS = Object.freeze({
   lightbox: { widths: [1200, 1600, 2400], qualities: [76, 82], fits: ['contain'] },
 });
 const FORMATS = ['avif', 'webp', 'jpeg'];
+const IMAGE_OUTPUT_FORMATS = Object.freeze({
+  avif: 'image/avif',
+  webp: 'image/webp',
+  jpeg: 'image/jpeg',
+});
 const SIGNATURE_TTL_SECONDS = 15 * 60;
 const encoder = new TextEncoder();
 
@@ -198,11 +203,11 @@ async function handlePhotoManifest(request, env, cors) {
   return jsonResponse({ demo: catalog.demo, categories: catalog.categories, expiresAt: exp, photos }, 200, cors, 'private, max-age=60');
 }
 
-async function transformPhoto(object, env, variant) {
+export async function transformPhoto(object, env, variant) {
   if (!env.IMAGES?.input) throw new Error('Images binding is not configured');
   return env.IMAGES.input(object.body)
     .transform({ width: variant.width, fit: variant.fit, withoutEnlargement: true })
-    .output({ format: variant.format, quality: variant.quality });
+    .output({ format: IMAGE_OUTPUT_FORMATS[variant.format], quality: variant.quality });
 }
 
 async function handlePhotoImage(request, env, cors, assetId) {
