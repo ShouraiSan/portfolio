@@ -109,7 +109,9 @@ function constantTimeEqual(left, right) {
 }
 
 function signaturePayload(assetId, variant) {
-  return [assetId, variant.mode, variant.width, variant.quality, variant.format, variant.fit, variant.version, variant.exp, variant.ref || ''].join('|');
+  // The variant is independently restricted by normalizeVariant. One signature per
+  // photo authorizes only its fixed presets, avoiding 18 HMAC operations per photo.
+  return [assetId, variant.version, variant.exp, variant.ref || ''].join('|');
 }
 
 async function referenceKey(secret) {
@@ -169,10 +171,9 @@ async function rateLimit(request, env) {
   return (await env.PHOTO_RATE_LIMITER.limit({ key })).success;
 }
 
-async function signedImageUrl(baseUrl, photo, mode, width, format, quality, fit, exp, ref, secret) {
-  const variant = { mode, width, format, quality, fit, version: photo.version, exp, ref };
+function signedImageUrl(baseUrl, photo, mode, width, format, quality, fit, exp, ref, signature) {
   const url = new URL(`${baseUrl}/photo/image/${photo.assetId}`);
-  url.search = new URLSearchParams({ mode, w: String(width), q: String(quality), fmt: format, fit, v: photo.version, exp: String(exp), ref, sig: await createPhotoSignature(photo.assetId, variant, secret) });
+  url.search = new URLSearchParams({ mode, w: String(width), q: String(quality), fmt: format, fit, v: photo.version, exp: String(exp), ref, sig: signature });
   return { width, url: url.toString() };
 }
 
@@ -184,11 +185,12 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
   };
   if (photo.pending) return result;
   const ref = await createPhotoReference(photo, secret);
+  const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref }, secret);
   result.images = {};
   for (const [mode, preset] of Object.entries(VARIANTS)) {
     result.images[mode] = {};
     const quality = preset.qualities.at(-1);
-    for (const format of FORMATS) result.images[mode][format] = await Promise.all(preset.widths.map((width) => signedImageUrl(baseUrl, photo, mode, width, format, quality, preset.fits[0], exp, ref, secret)));
+    for (const format of FORMATS) result.images[mode][format] = preset.widths.map((width) => signedImageUrl(baseUrl, photo, mode, width, format, quality, preset.fits[0], exp, ref, signature));
   }
   return result;
 }

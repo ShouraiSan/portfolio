@@ -11,6 +11,7 @@ function sourceSet(entries = []) {
 }
 
 function Picture({ photo, mode, onLoad, onError }) {
+  const [useJpegFallback, setUseJpegFallback] = useState(false);
   const variants = photo.images?.[mode];
   if (!variants) return null;
   const fallback = variants.jpeg?.at(-1) || variants.webp?.at(-1) || variants.avif?.at(-1);
@@ -19,9 +20,10 @@ function Picture({ photo, mode, onLoad, onError }) {
     : '100vw';
 
   return <picture>
-    {variants.avif?.length > 0 && <source type="image/avif" srcSet={sourceSet(variants.avif)} sizes={sizes}/>} 
-    {variants.webp?.length > 0 && <source type="image/webp" srcSet={sourceSet(variants.webp)} sizes={sizes}/>} 
+    {!useJpegFallback && variants.avif?.length > 0 && <source type="image/avif" srcSet={sourceSet(variants.avif)} sizes={sizes}/>}
+    {!useJpegFallback && variants.webp?.length > 0 && <source type="image/webp" srcSet={sourceSet(variants.webp)} sizes={sizes}/>}
     <img
+      key={useJpegFallback ? 'jpeg-fallback' : 'preferred-format'}
       src={fallback?.url}
       srcSet={sourceSet(variants.jpeg)}
       sizes={sizes}
@@ -31,7 +33,10 @@ function Picture({ photo, mode, onLoad, onError }) {
       draggable="false"
       onContextMenu={(event) => event.preventDefault()}
       onLoad={onLoad}
-      onError={onError}
+      onError={(event) => {
+        if (!useJpegFallback && variants.jpeg?.length) setUseJpegFallback(true);
+        else onError?.(event);
+      }}
     />
   </picture>;
 }
@@ -231,6 +236,7 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
 
 function Photography() {
   const [manifest, setManifest] = useState(null);
+  const manifestRef = useRef(null);
   const [loadError, setLoadError] = useState(false);
   const [category, setCategory] = useState('全部');
   const [lightboxIndex, setLightboxIndex] = useState(null);
@@ -270,18 +276,29 @@ function Photography() {
     if (filterFrameRef.current) cancelAnimationFrame(filterFrameRef.current);
   }, []);
 
-  const loadManifest = async () => {
-    setLoadError(false);
+  const loadManifest = useCallback(async () => {
     try {
       const response = await fetch(`${photoBase}/manifest`, { credentials: 'omit' });
       if (!response.ok) throw new Error(`Manifest request failed: ${response.status}`);
       setManifest(await response.json());
+      setLoadError(false);
     } catch {
-      setLoadError(true);
+      if (!manifestRef.current) setLoadError(true);
     }
-  };
+  }, []);
 
-  useEffect(() => { loadManifest(); }, []);
+  useEffect(() => { loadManifest(); }, [loadManifest]);
+
+  manifestRef.current = manifest;
+  useEffect(() => {
+    if (!manifest?.expiresAt) return;
+    const refresh = () => {
+      if (document.visibilityState === 'visible' && Date.now() >= (manifestRef.current?.expiresAt - 60) * 1000) loadManifest();
+    };
+    const interval = setInterval(refresh, 60_000);
+    document.addEventListener('visibilitychange', refresh);
+    return () => { clearInterval(interval); document.removeEventListener('visibilitychange', refresh); };
+  }, [manifest?.expiresAt, loadManifest]);
 
   const visiblePhotos = useMemo(() => {
     const photos = manifest?.photos || [];

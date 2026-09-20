@@ -1,6 +1,7 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 import worker, { createPhotoSignature, normalizeVariant, transformPhoto, verifyPhotoSignature } from '../src/index.js';
+import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
 const opaqueRef = 'abcdefghijklmnopqrstuvwxyz0123456789_-';
@@ -31,6 +32,24 @@ test('public manifest hides object keys and exposes pending demo records', async
   assert.ok(body.photos.every((photo) => photo.pending));
   assert.equal(JSON.stringify(body).includes('objectKey'), false);
   assert.equal(JSON.stringify(body).includes('REPLACE_ME'), false);
+});
+
+test('large catalogs reuse one signature per photo across allowed variants', async () => {
+  clearPhotoCatalogCache();
+  const photos = Array.from({ length: 58 }, (_, index) => ({
+    key: `风光/photo-${index}.jpg`, size: 100, etag: `etag-${index}`,
+    uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {},
+  }));
+  const bucket = { list: async () => ({ objects: photos, truncated: false }), get: async () => null };
+  const request = new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders });
+  const response = await worker.fetch(request, { ...env, photo: bucket });
+  const body = await response.json();
+  assert.equal(response.status, 200);
+  assert.equal(body.photos.length, 58);
+  const image = body.photos[0].images;
+  assert.equal(new URL(image.thumbnail.avif[0].url).searchParams.get('sig'), new URL(image.lightbox.jpeg[2].url).searchParams.get('sig'));
+  assert.equal(JSON.stringify(body).includes('objectKey'), false);
+  clearPhotoCatalogCache();
 });
 
 test('variant whitelist accepts presets and rejects arbitrary dimensions', () => {
@@ -64,7 +83,9 @@ test('signatures reject expiry and tampering', async () => {
   const assetId = 'a7f81d2e-94c6-4b37-b815-3e60e1d9af42';
   const signature = await createPhotoSignature(assetId, variant, secret);
   assert.equal(await verifyPhotoSignature(assetId, variant, signature, secret, now), true);
-  assert.equal(await verifyPhotoSignature(assetId, { ...variant, width: 1200 }, signature, secret, now), false);
+  assert.equal(await verifyPhotoSignature(assetId, { ...variant, width: 1200 }, signature, secret, now), true);
+  assert.equal(await verifyPhotoSignature(assetId, { ...variant, version: 'demo-2' }, signature, secret, now), false);
+  assert.equal(await verifyPhotoSignature(assetId, { ...variant, ref: `${opaqueRef}changed` }, signature, secret, now), false);
   assert.equal(await verifyPhotoSignature(assetId, { ...variant, exp: now - 1 }, signature, secret, now), false);
 });
 
@@ -90,7 +111,7 @@ test('image route rejects expired signatures, tampered variants, and illegal pat
     return `https://kensym15.dpdns.org/photo/image/${assetId}?${query}`;
   };
 
-  const tampered = new Request(makeUrl({ ...valid, width: 1200 }), { headers: trustedHeaders });
+  const tampered = new Request(makeUrl({ ...valid, version: 'demo-2' }), { headers: trustedHeaders });
   assert.equal((await worker.fetch(tampered, env)).status, 403);
 
   const expiredVariant = { ...valid, exp: now - 10 };
