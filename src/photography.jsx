@@ -1,5 +1,5 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronLeft, ChevronRight, RotateCcw, X } from 'lucide-react';
+import { ArrowLeft, ChevronLeft, ChevronRight, Maximize2, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -48,10 +48,61 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
   const photo = photos[index];
   const closeRef = useRef(null);
   const dialogRef = useRef(null);
+  const stageRef = useRef(null);
+  const imageRef = useRef(null);
+  const pointersRef = useRef(new Map());
+  const gestureRef = useRef(null);
+  const viewRef = useRef({ scale: 1, x: 0, y: 0 });
   const [status, setStatus] = useState(photo.pending ? 'pending' : 'loading');
   const [retryKey, setRetryKey] = useState(0);
+  const [view, setView] = useState(viewRef.current);
 
-  useEffect(() => setStatus(photo.pending ? 'pending' : 'loading'), [photo.assetId, photo.pending]);
+  const commitView = useCallback((next) => {
+    const stage = stageRef.current;
+    const image = imageRef.current;
+    const scale = Math.min(4, Math.max(1, next.scale));
+    let x = next.x;
+    let y = next.y;
+    if (stage && image) {
+      const inset = matchMedia('(max-width: 700px)').matches ? 12 : 24;
+      const fit = Math.min(1, (stage.clientWidth - inset) / image.naturalWidth, (stage.clientHeight - inset) / image.naturalHeight);
+      const baseWidth = image.naturalWidth * fit;
+      const baseHeight = image.naturalHeight * fit;
+      const maxX = Math.max(0, (baseWidth * scale - stage.clientWidth) / 2);
+      const maxY = Math.max(0, (baseHeight * scale - stage.clientHeight) / 2);
+      x = Math.min(maxX, Math.max(-maxX, x));
+      y = Math.min(maxY, Math.max(-maxY, y));
+    }
+    const normalized = { scale, x: scale === 1 ? 0 : x, y: scale === 1 ? 0 : y };
+    viewRef.current = normalized;
+    setView(normalized);
+  }, []);
+
+  const resetView = useCallback(() => commitView({ scale: 1, x: 0, y: 0 }), [commitView]);
+
+  const zoomTo = useCallback((nextScale, clientX, clientY) => {
+    const current = viewRef.current;
+    const stage = stageRef.current;
+    const scale = Math.min(4, Math.max(1, nextScale));
+    if (!stage || scale === 1) return resetView();
+    const rect = stage.getBoundingClientRect();
+    const anchorX = (clientX ?? rect.left + rect.width / 2) - (rect.left + rect.width / 2);
+    const anchorY = (clientY ?? rect.top + rect.height / 2) - (rect.top + rect.height / 2);
+    const ratio = scale / current.scale;
+    commitView({
+      scale,
+      x: anchorX - (anchorX - current.x) * ratio,
+      y: anchorY - (anchorY - current.y) * ratio,
+    });
+  }, [commitView, resetView]);
+
+  useEffect(() => {
+    setStatus(photo.pending ? 'pending' : 'loading');
+    imageRef.current = null;
+    pointersRef.current.clear();
+    gestureRef.current = null;
+    resetView();
+  }, [photo.assetId, photo.pending, resetView]);
   useEffect(() => {
     const previousOverflow = document.body.style.overflow;
     document.body.style.overflow = 'hidden';
@@ -60,6 +111,9 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
       if (event.key === 'Escape') onClose();
       if (event.key === 'ArrowLeft') onChange((current) => (current - 1 + photos.length) % photos.length);
       if (event.key === 'ArrowRight') onChange((current) => (current + 1) % photos.length);
+      if ((event.key === '+' || event.key === '=') && imageRef.current) zoomTo(viewRef.current.scale + .5);
+      if (event.key === '-' && imageRef.current) zoomTo(viewRef.current.scale - .5);
+      if (event.key === '0' && imageRef.current) resetView();
       if (event.key === 'Tab') {
         const controls = [...dialogRef.current.querySelectorAll('button:not([disabled])')];
         const first = controls[0];
@@ -74,7 +128,13 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
       window.removeEventListener('keydown', onKey);
       triggerRef.current?.focus();
     };
-  }, [onChange, onClose, photos.length, triggerRef]);
+  }, [onChange, onClose, photos.length, resetView, triggerRef, zoomTo]);
+
+  useEffect(() => {
+    const keepInBounds = () => commitView(viewRef.current);
+    window.addEventListener('resize', keepInBounds);
+    return () => window.removeEventListener('resize', keepInBounds);
+  }, [commitView]);
 
   useEffect(() => {
     if (status !== 'ready' || photos.length < 2) return;
@@ -86,14 +146,73 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
   const previous = () => onChange((current) => (current - 1 + photos.length) % photos.length);
   const next = () => onChange((current) => (current + 1) % photos.length);
 
+  const onWheel = (event) => {
+    if (status !== 'ready') return;
+    event.preventDefault();
+    zoomTo(viewRef.current.scale * Math.exp(-event.deltaY * .0015), event.clientX, event.clientY);
+  };
+
+  const onPointerDown = (event) => {
+    if (status !== 'ready') return;
+    event.currentTarget.setPointerCapture(event.pointerId);
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const pointers = [...pointersRef.current.values()];
+    if (pointers.length === 1) {
+      gestureRef.current = { type: 'drag', startX: event.clientX, startY: event.clientY, ...viewRef.current };
+    } else if (pointers.length === 2) {
+      gestureRef.current = {
+        type: 'pinch',
+        distance: Math.hypot(pointers[1].x - pointers[0].x, pointers[1].y - pointers[0].y),
+        midpointX: (pointers[0].x + pointers[1].x) / 2,
+        midpointY: (pointers[0].y + pointers[1].y) / 2,
+        ...viewRef.current,
+      };
+    }
+  };
+
+  const onPointerMove = (event) => {
+    if (!pointersRef.current.has(event.pointerId)) return;
+    pointersRef.current.set(event.pointerId, { x: event.clientX, y: event.clientY });
+    const pointers = [...pointersRef.current.values()];
+    const gesture = gestureRef.current;
+    if (pointers.length >= 2 && gesture?.type === 'pinch') {
+      const distance = Math.hypot(pointers[1].x - pointers[0].x, pointers[1].y - pointers[0].y);
+      const scale = Math.min(4, Math.max(1, gesture.scale * distance / Math.max(gesture.distance, 1)));
+      const stage = stageRef.current?.getBoundingClientRect();
+      const anchorX = gesture.midpointX - (stage?.left + stage?.width / 2 || gesture.midpointX);
+      const anchorY = gesture.midpointY - (stage?.top + stage?.height / 2 || gesture.midpointY);
+      const ratio = scale / gesture.scale;
+      commitView({ scale, x: anchorX - (anchorX - gesture.x) * ratio, y: anchorY - (anchorY - gesture.y) * ratio });
+    } else if (pointers.length === 1 && gesture?.type === 'drag' && gesture.scale > 1) {
+      commitView({ scale: gesture.scale, x: gesture.x + event.clientX - gesture.startX, y: gesture.y + event.clientY - gesture.startY });
+    }
+  };
+
+  const endPointer = (event) => {
+    pointersRef.current.delete(event.pointerId);
+    const remaining = [...pointersRef.current.values()];
+    gestureRef.current = remaining.length === 1
+      ? { type: 'drag', startX: remaining[0].x, startY: remaining[0].y, ...viewRef.current }
+      : null;
+  };
+
   return <div ref={dialogRef} className="photo-lightbox" role="dialog" aria-modal="true" aria-label={`${photo.title} 图片查看器`} onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
     <div className="photo-lightbox-bar">
       <p aria-live="polite">{String(index + 1).padStart(2, '0')} / {String(photos.length).padStart(2, '0')}</p>
-      <button ref={closeRef} type="button" onClick={onClose} aria-label="关闭灯箱" title="关闭"><X/></button>
+      <div className="photo-lightbox-actions" role="toolbar" aria-label="图片缩放控制">
+        <button type="button" onClick={() => zoomTo(view.scale - .5)} disabled={status !== 'ready' || view.scale <= 1} aria-label="缩小图片" title="缩小"><Minus/></button>
+        <output aria-live="polite" aria-label="当前缩放比例">{Math.round(view.scale * 100)}%</output>
+        <button type="button" onClick={() => zoomTo(view.scale + .5)} disabled={status !== 'ready' || view.scale >= 4} aria-label="放大图片" title="放大"><Plus/></button>
+        <button type="button" onClick={resetView} disabled={status !== 'ready' || view.scale === 1} aria-label="恢复适应窗口" title="适应窗口"><Maximize2/></button>
+        <span aria-hidden="true"/>
+        <button ref={closeRef} type="button" onClick={onClose} aria-label="关闭灯箱" title="关闭"><X/></button>
+      </div>
     </div>
     <button className="photo-lightbox-nav photo-lightbox-prev" type="button" onClick={previous} aria-label="上一张" title="上一张"><ChevronLeft/></button>
-    <div className="photo-lightbox-stage" onMouseDown={(event) => event.target === event.currentTarget && onClose()}>
-      {!photo.pending && <Picture key={`${photo.assetId}-${retryKey}`} photo={photo} mode="lightbox" onLoad={() => setStatus('ready')} onError={() => setStatus('error')}/>} 
+    <div ref={stageRef} className={`photo-lightbox-stage${view.scale > 1 ? ' is-zoomed' : ''}`} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={endPointer} onPointerCancel={endPointer} onDoubleClick={(event) => zoomTo(view.scale > 1 ? 1 : 2, event.clientX, event.clientY)}>
+      {!photo.pending && <div className="photo-zoom-surface" style={{ '--photo-scale': view.scale, '--photo-x': `${view.x}px`, '--photo-y': `${view.y}px` }}>
+        <Picture key={`${photo.assetId}-${retryKey}`} photo={photo} mode="lightbox" onLoad={(event) => { imageRef.current = event.currentTarget; setStatus('ready'); resetView(); }} onError={() => setStatus('error')}/>
+      </div>}
       {status === 'loading' && <div className="photo-image-state" role="status">LOADING IMAGE</div>}
       {status === 'pending' && <div className="photo-image-state photo-image-pending"><strong>IMAGE PENDING</strong><span>该 DEMO 记录尚未连接 R2 原图</span></div>}
       {status === 'error' && <div className="photo-image-state" role="alert"><span>图片加载失败</span><button type="button" onClick={() => { setStatus('loading'); setRetryKey((value) => value + 1); }}><RotateCcw size={16}/> 重试</button></div>}
