@@ -75,6 +75,7 @@ function App() {
         <a href="#about" onClick={() => setOpen(false)}>关于</a>
         <a href="#work" onClick={() => setOpen(false)}>作品</a>
         <a href="./capabilities.html" onClick={() => setOpen(false)}>能力</a>
+        <a href="./photography.html" onClick={() => setOpen(false)}>摄影</a>
       </nav>
       <a className="contact-link" href="#contact">联系我 <ArrowUpRight size={15}/></a>
       <button className="menu" onClick={() => setOpen(!open)} aria-label="菜单">{open ? <X/> : <Menu/>}</button>

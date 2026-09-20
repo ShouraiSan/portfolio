@@ -1,6 +1,7 @@
 node_modules/
 node_modules-broken/
 dist/
+worker/.wrangler/
 .pnpm-store/
 .DS_Store
 .env.local
