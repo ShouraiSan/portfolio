@@ -29,10 +29,8 @@ const VARIANTS = Object.freeze({
   thumbnail: { widths: [480, 768, 1200], qualities: [68, 76], fits: ['cover'] },
   lightbox: { widths: [1200, 1600, 2400], qualities: [76, 82], fits: ['contain'] },
 });
-const FORMATS = ['avif', 'webp', 'jpeg'];
+const FORMATS = ['jpeg'];
 const IMAGE_OUTPUT_FORMATS = Object.freeze({
-  avif: 'image/avif',
-  webp: 'image/webp',
   jpeg: 'image/jpeg',
 });
 const SIGNATURE_TTL_SECONDS = 15 * 60;

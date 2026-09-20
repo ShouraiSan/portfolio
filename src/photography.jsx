@@ -11,19 +11,15 @@ function sourceSet(entries = []) {
 }
 
 function Picture({ photo, mode, onLoad, onError }) {
-  const [useJpegFallback, setUseJpegFallback] = useState(false);
   const variants = photo.images?.[mode];
   if (!variants) return null;
-  const fallback = variants.jpeg?.at(-1) || variants.webp?.at(-1) || variants.avif?.at(-1);
+  const fallback = variants.jpeg?.at(-1);
   const sizes = mode === 'thumbnail'
     ? '(max-width: 640px) 100vw, (max-width: 1100px) 50vw, 33vw'
     : '100vw';
 
   return <picture>
-    {!useJpegFallback && variants.avif?.length > 0 && <source type="image/avif" srcSet={sourceSet(variants.avif)} sizes={sizes}/>}
-    {!useJpegFallback && variants.webp?.length > 0 && <source type="image/webp" srcSet={sourceSet(variants.webp)} sizes={sizes}/>}
     <img
-      key={useJpegFallback ? 'jpeg-fallback' : 'preferred-format'}
       src={fallback?.url}
       srcSet={sourceSet(variants.jpeg)}
       sizes={sizes}
@@ -33,10 +29,7 @@ function Picture({ photo, mode, onLoad, onError }) {
       draggable="false"
       onContextMenu={(event) => event.preventDefault()}
       onLoad={onLoad}
-      onError={(event) => {
-        if (!useJpegFallback && variants.jpeg?.length) setUseJpegFallback(true);
-        else onError?.(event);
-      }}
+      onError={onError}
     />
   </picture>;
 }
@@ -144,7 +137,7 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
   useEffect(() => {
     if (status !== 'ready' || photos.length < 2) return;
     const neighbor = photos[(index + 1) % photos.length];
-    const url = neighbor.images?.lightbox?.webp?.at(-1)?.url || neighbor.images?.lightbox?.jpeg?.at(-1)?.url;
+    const url = neighbor.images?.lightbox?.jpeg?.at(-1)?.url;
     if (url) new Image().src = url;
   }, [index, photos, status]);
 
