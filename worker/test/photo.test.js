@@ -3,7 +3,7 @@ import test from 'node:test';
 import worker, { createPhotoSignature, normalizeVariant, verifyPhotoSignature } from '../src/index.js';
 
 const secret = 'test-signing-secret';
-const allowed = 'https://shouraisan.github.io,http://127.0.0.1:5173';
+const allowed = 'https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173';
 const env = { ALLOWED_ORIGINS: allowed, PHOTO_SIGNING_SECRET: secret, photo: { get: async () => null } };
 const trustedHeaders = { Referer: 'http://127.0.0.1:5173/photography.html', Origin: 'http://127.0.0.1:5173' };
 
@@ -11,6 +11,14 @@ test('manifest rejects missing and foreign referers', async () => {
   assert.equal((await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest'), env)).status, 403);
   const foreign = new Request('https://kensym15.dpdns.org/photo/manifest', { headers: { Referer: 'https://example.com/' } });
   assert.equal((await worker.fetch(foreign, env)).status, 403);
+});
+
+test('workers.dev origin can load the gallery it serves', async () => {
+  const origin = 'https://portfolio-media.jlmafuture.workers.dev';
+  const request = new Request(`${origin}/photo/manifest`, { headers: { Referer: `${origin}/photography.html`, Origin: origin } });
+  const response = await worker.fetch(request, env);
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get('access-control-allow-origin'), origin);
 });
 
 test('public manifest hides object keys and exposes pending demo records', async () => {
