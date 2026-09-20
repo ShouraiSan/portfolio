@@ -6,23 +6,13 @@ import './styles.css';
 const remotePhotoBase = 'https://portfolio-media.jlmafuture.workers.dev/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
-function sourceSet(entries = []) {
-  return entries.map(({ url, width }) => `${url} ${width}w`).join(', ');
-}
-
 function Picture({ photo, mode, onLoad, onError }) {
-  const variants = photo.images?.[mode];
-  if (!variants) return null;
-  const fallback = variants.jpeg?.at(-1);
-  const sizes = mode === 'thumbnail'
-    ? '(max-width: 640px) 100vw, (max-width: 1100px) 50vw, 33vw'
-    : '100vw';
+  const url = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
+  if (!url) return null;
 
   return <picture>
     <img
-      src={fallback?.url}
-      srcSet={sourceSet(variants.jpeg)}
-      sizes={sizes}
+      src={url}
       alt={photo.alt || photo.title}
       loading={mode === 'thumbnail' && photo.priority ? 'eager' : mode === 'thumbnail' ? 'lazy' : 'eager'}
       fetchPriority={mode === 'thumbnail' && photo.priority ? 'high' : 'auto'}
@@ -137,7 +127,7 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
   useEffect(() => {
     if (status !== 'ready' || photos.length < 2) return;
     const neighbor = photos[(index + 1) % photos.length];
-    const url = neighbor.images?.lightbox?.jpeg?.at(-1)?.url;
+    const url = neighbor.original?.url || neighbor.images?.lightbox?.jpeg?.at(-1)?.url;
     if (url) new Image().src = url;
   }, [index, photos, status]);
 

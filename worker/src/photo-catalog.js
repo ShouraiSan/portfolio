@@ -1,6 +1,6 @@
 import exifr from 'exifr';
 
-const IMAGE_EXTENSION = /\.(avif|heic|heif|jpe?g|png|webp)$/i;
+const IMAGE_EXTENSION = /\.jpe?g$/i;
 const METADATA_RANGE_BYTES = 512 * 1024;
 const CATALOG_TTL_MS = 5 * 60 * 1000;
 const encoder = new TextEncoder();

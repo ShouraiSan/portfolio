@@ -25,14 +25,6 @@ const demoCatalog = {
   photosById: new Map(demoPhotoManifest.map((photo) => [photo.assetId, photo])),
 };
 
-const VARIANTS = Object.freeze({
-  thumbnail: { widths: [480, 768, 1200], qualities: [68, 76], fits: ['cover'] },
-  lightbox: { widths: [1200, 1600, 2400], qualities: [76, 82], fits: ['contain'] },
-});
-const FORMATS = ['jpeg'];
-const IMAGE_OUTPUT_FORMATS = Object.freeze({
-  jpeg: 'image/jpeg',
-});
 const SIGNATURE_TTL_SECONDS = 15 * 60;
 const encoder = new TextEncoder();
 
@@ -107,8 +99,6 @@ function constantTimeEqual(left, right) {
 }
 
 function signaturePayload(assetId, variant) {
-  // The variant is independently restricted by normalizeVariant. One signature per
-  // photo authorizes only its fixed presets, avoiding 18 HMAC operations per photo.
   return [assetId, variant.version, variant.exp, variant.ref || ''].join('|');
 }
 
@@ -138,19 +128,15 @@ async function readPhotoReference(value, secret) {
   } catch { return null; }
 }
 
-export function normalizeVariant(searchParams) {
-  const variant = {
-    mode: searchParams.get('mode') || '', width: Number(searchParams.get('w')),
-    quality: Number(searchParams.get('q')), format: searchParams.get('fmt') || '',
-    fit: searchParams.get('fit') || '', version: searchParams.get('v') || '',
-    exp: Number(searchParams.get('exp')), ref: searchParams.get('ref') || '',
+export function normalizePhotoRequest(searchParams) {
+  const value = {
+    version: searchParams.get('v') || '',
+    exp: Number(searchParams.get('exp')),
+    ref: searchParams.get('ref') || '',
   };
-  const preset = VARIANTS[variant.mode];
-  if (!preset || !preset.widths.includes(variant.width) || !preset.qualities.includes(variant.quality)
-    || !FORMATS.includes(variant.format) || !preset.fits.includes(variant.fit)
-    || !/^[A-Za-z0-9._-]{1,40}$/.test(variant.version) || !Number.isSafeInteger(variant.exp)
-    || !/^[A-Za-z0-9_-]{20,1024}$/.test(variant.ref)) return null;
-  return variant;
+  if (!/^[A-Za-z0-9._-]{1,40}$/.test(value.version) || !Number.isSafeInteger(value.exp)
+    || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)) return null;
+  return value;
 }
 
 export async function createPhotoSignature(assetId, variant, secret) {
@@ -169,10 +155,10 @@ async function rateLimit(request, env) {
   return (await env.PHOTO_RATE_LIMITER.limit({ key })).success;
 }
 
-function signedImageUrl(baseUrl, photo, mode, width, format, quality, fit, exp, ref, signature) {
+function signedImageUrl(baseUrl, photo, exp, ref, signature) {
   const url = new URL(`${baseUrl}/photo/image/${photo.assetId}`);
-  url.search = new URLSearchParams({ mode, w: String(width), q: String(quality), fmt: format, fit, v: photo.version, exp: String(exp), ref, sig: signature });
-  return { width, url: url.toString() };
+  url.search = new URLSearchParams({ v: photo.version, exp: String(exp), ref, sig: signature });
+  return url.toString();
 }
 
 async function publicPhoto(photo, baseUrl, exp, secret) {
@@ -184,12 +170,14 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
   if (photo.pending) return result;
   const ref = await createPhotoReference(photo, secret);
   const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref }, secret);
-  result.images = {};
-  for (const [mode, preset] of Object.entries(VARIANTS)) {
-    result.images[mode] = {};
-    const quality = preset.qualities.at(-1);
-    for (const format of FORMATS) result.images[mode][format] = preset.widths.map((width) => signedImageUrl(baseUrl, photo, mode, width, format, quality, preset.fits[0], exp, ref, signature));
-  }
+  const url = signedImageUrl(baseUrl, photo, exp, ref, signature);
+  result.original = { url };
+  // Retain the old response shape for already-deployed clients during rollout.
+  const legacyEntry = { width: 2400, url };
+  result.images = {
+    thumbnail: { jpeg: [legacyEntry] },
+    lightbox: { jpeg: [legacyEntry] },
+  };
   return result;
 }
 
@@ -203,25 +191,19 @@ async function handlePhotoManifest(request, env, cors) {
   return jsonResponse({ demo: catalog.demo, categories: catalog.categories, expiresAt: exp, photos }, 200, cors, 'private, max-age=60');
 }
 
-export async function transformPhoto(object, env, variant) {
-  if (!env.IMAGES?.input) throw new Error('Images binding is not configured');
-  return env.IMAGES.input(object.body)
-    .transform({ width: variant.width, fit: variant.fit, withoutEnlargement: true })
-    .output({ format: IMAGE_OUTPUT_FORMATS[variant.format], quality: variant.quality });
-}
-
 async function handlePhotoImage(request, env, cors, assetId) {
   const url = new URL(request.url);
-  const variant = normalizeVariant(url.searchParams);
-  if (!variant || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
-  if (!await verifyPhotoSignature(assetId, variant, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
-  const reference = await readPhotoReference(variant.ref, env.PHOTO_SIGNING_SECRET);
-  if (!reference || reference.version !== variant.version) return jsonResponse({ error: 'Image not found' }, 404, cors);
+  const photoRequest = normalizePhotoRequest(url.searchParams);
+  if (!photoRequest || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
+  if (!await verifyPhotoSignature(assetId, photoRequest, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
+  const reference = await readPhotoReference(photoRequest.ref, env.PHOTO_SIGNING_SECRET);
+  if (!reference || reference.version !== photoRequest.version || !/\.jpe?g$/i.test(reference.key)) return jsonResponse({ error: 'Image not found' }, 404, cors);
   if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
 
   const canonicalUrl = new URL(url);
   canonicalUrl.searchParams.delete('sig');
   canonicalUrl.searchParams.delete('exp');
+  canonicalUrl.searchParams.delete('ref');
   canonicalUrl.searchParams.set('__origin', request.headers.get('Origin') || requestOrigin(request.headers.get('Referer')) || '');
   const cache = globalThis.caches?.default;
   const cacheKey = new Request(canonicalUrl, { method: 'GET' });
@@ -230,17 +212,14 @@ async function handlePhotoImage(request, env, cors, assetId) {
 
   const object = await env.photo.get(reference.key);
   if (!object) return jsonResponse({ error: 'Image not found' }, 404, cors);
-  let output;
-  try { output = await transformPhoto(object, env, variant); }
-  catch { return jsonResponse({ error: 'Image transformation unavailable' }, 503, cors); }
-
-  const imageResponse = typeof output.response === 'function' ? await output.response() : output;
   const headers = photoHeaders(cors);
-  headers.set('Content-Type', `image/${variant.format}`);
+  headers.set('Content-Type', 'image/jpeg');
   headers.set('Content-Disposition', 'inline');
+  headers.set('Content-Length', String(object.size));
+  headers.set('ETag', object.httpEtag);
   headers.set('Cache-Control', 'public, max-age=31536000, immutable');
   headers.set('CDN-Cache-Control', 'public, max-age=31536000, immutable');
-  const response = new Response(imageResponse.body, { status: 200, headers });
+  const response = new Response(object.body, { status: 200, headers });
   if (cache) await cache.put(cacheKey, response.clone());
   return request.method === 'HEAD' ? new Response(null, response) : response;
 }

@@ -2,25 +2,25 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { clearPhotoCatalogCache, loadPhotoCatalog, yearFor } from '../src/photo-catalog.js';
 
-function pngHeader(width, height) {
-  const bytes = new Uint8Array(24);
-  bytes.set([0x89, 0x50, 0x4e, 0x47], 0);
+function jpegHeader(width, height) {
+  const bytes = new Uint8Array(21);
+  bytes.set([0xff, 0xd8, 0xff, 0xc0, 0x00, 0x11, 0x08], 0);
   const view = new DataView(bytes.buffer);
-  view.setUint32(16, width);
-  view.setUint32(20, height);
+  view.setUint16(7, height);
+  view.setUint16(9, width);
   return bytes.buffer;
 }
 
 test('catalog derives category, title, dimensions, and private asset id from R2 objects', async () => {
   clearPhotoCatalogCache();
-  const image = pngHeader(1600, 1200);
+  const image = jpegHeader(1600, 1200);
   const env = {
     PHOTO_SIGNING_SECRET: 'catalog-test-secret',
     PHOTO_EXIF_SCAN: 'true',
     photo: {
       list: async () => ({
         objects: [{
-          key: '手办/my_first_figure.png',
+          key: '手办/my_first_figure.jpg',
           size: image.byteLength,
           etag: 'etag-001',
           uploaded: new Date('2025-03-01T00:00:00Z'),
