@@ -4,11 +4,11 @@
 
 ## 首次配置
 
-1. 创建名为 `photo` 的私有 R2 bucket，保持 `r2.dev` 公共访问关闭。`wrangler.toml` 中的小写 binding `photo` 和 bucket 名均已配置。
-2. 在 `worker` 目录执行 `npx wrangler secret put PHOTO_SIGNING_SECRET`，写入至少 32 字节的随机值。不要把真实 secret 放入仓库、`.env` 或 `wrangler.toml`。
+1. 创建名为 `photo` 的私有 R2 bucket，保持 `r2.dev` 公共访问关闭。项目根目录 `wrangler.toml` 中的小写 binding `photo` 和 bucket 名均已配置。
+2. 在项目根目录执行 `pnpm exec wrangler secret put PHOTO_SIGNING_SECRET`，写入至少 32 字节的随机值。不要把真实 secret 放入仓库、`.env` 或 `wrangler.toml`。
 3. 检查 `ALLOWED_ORIGINS`。当前允许正式站点、Worker 域名及 `localhost:5173`、`127.0.0.1:5173` 本地预览来源。
 4. 部署前确认 `PHOTO_RATE_LIMITER` 的 `namespace_id` 在账户内唯一；示例限制为每个客户端每分钟 120 次。生产环境还应在 Cloudflare WAF/Rate Limiting 中对 `/photo/manifest` 和 `/photo/image/*` 配置分层限速。
-5. 执行 `npx wrangler deploy`。站点生产构建默认使用 `https://portfolio-media.jlmafuture.workers.dev/photo`，也可用 `VITE_PHOTO_API_BASE_URL` 覆盖。
+5. 执行 `pnpm worker:deploy`。站点生产构建默认使用 `https://portfolio-media.jlmafuture.workers.dev/photo`，也可用 `VITE_PHOTO_API_BASE_URL` 覆盖。
 
 ## 内容维护
 
@@ -51,8 +51,7 @@ pnpm build
 需要在本地预览远端 bucket 时，另开一个终端运行只读远端 binding：
 
 ```powershell
-cd worker
-pnpm dlx wrangler dev --port 8788 --var "PHOTO_SIGNING_SECRET:local-preview-secret"
+pnpm worker:dev --var "PHOTO_SIGNING_SECRET:local-preview-secret"
 ```
 
 Vite 会自动代理该本地 Worker；若 8788 未运行，则回退到 DEMO 清单。

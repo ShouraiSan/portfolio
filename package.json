@@ -1,9 +1,16 @@
 {
   "type": "module",
+  "packageManager": "pnpm@11.19.0",
   "scripts": {
     "dev": "vite --host 127.0.0.1",
     "build": "vite build",
-    "test": "node --test worker/test/*.test.js"
+    "test": "node --test worker/test/*.test.js",
+    "worker:check": "wrangler deploy --dry-run",
+    "worker:dev": "wrangler dev --port 8788",
+    "worker:deploy": "wrangler deploy"
+  },
+  "devDependencies": {
+    "wrangler": "^4.135.0"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
