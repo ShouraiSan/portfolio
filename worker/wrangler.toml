@@ -1,6 +1,7 @@
 name = "portfolio-media"
 main = "src/index.js"
 compatibility_date = "2026-09-18"
+workers_dev = true
 
 routes = [
   { pattern = "kensym15.dpdns.org", custom_domain = true }

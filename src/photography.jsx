@@ -3,7 +3,7 @@ import { ArrowLeft, ChevronLeft, ChevronRight, RotateCcw, X } from 'lucide-react
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const remotePhotoBase = 'https://kensym15.dpdns.org/photo';
+const remotePhotoBase = 'https://portfolio-media.jlmafuture.workers.dev/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
 function sourceSet(entries = []) {

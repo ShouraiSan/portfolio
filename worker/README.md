@@ -9,7 +9,7 @@
 3. 在 `worker` 目录执行 `npx wrangler secret put PHOTO_SIGNING_SECRET`，写入至少 32 字节的随机值。不要把真实 secret 放入仓库、`.env` 或 `wrangler.toml`。
 4. 检查 `ALLOWED_ORIGINS`。当前允许正式站点、Worker 域名及 `localhost:5173`、`127.0.0.1:5173` 本地预览来源。
 5. 部署前确认 `PHOTO_RATE_LIMITER` 的 `namespace_id` 在账户内唯一；示例限制为每个客户端每分钟 120 次。生产环境还应在 Cloudflare WAF/Rate Limiting 中对 `/photo/manifest` 和 `/photo/image/*` 配置分层限速。
-6. 执行 `npx wrangler deploy`。站点生产构建默认使用 `https://kensym15.dpdns.org/photo`，也可用 `VITE_PHOTO_API_BASE_URL` 覆盖。
+6. 执行 `npx wrangler deploy`。站点生产构建默认使用 `https://portfolio-media.jlmafuture.workers.dev/photo`，也可用 `VITE_PHOTO_API_BASE_URL` 覆盖。
 
 Cloudflare 的 Images binding 是否可用取决于账户能力。若部署时报 `[images]` 不受支持，先在控制台启用对应产品，不要删除转换层或让页面直接加载 R2 原图。
 
