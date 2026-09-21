@@ -1,0 +1,12 @@
+name = "photo-avif-batch"
+main = "worker.js"
+compatibility_date = "2026-09-18"
+workers_dev = true
+
+[[r2_buckets]]
+binding = "R2"
+bucket_name = "photo"
+remote = true
+
+[images]
+binding = "IMAGES"

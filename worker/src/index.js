@@ -99,7 +99,9 @@ function constantTimeEqual(left, right) {
 }
 
 function signaturePayload(assetId, variant) {
-  return [assetId, variant.version, variant.exp, variant.ref || ''].join('|');
+  const payload = [assetId, variant.version, variant.exp, variant.ref || ''];
+  if (variant.variant && variant.variant !== 'original') payload.push(variant.variant);
+  return payload.join('|');
 }
 
 async function referenceKey(secret) {
@@ -107,9 +109,9 @@ async function referenceKey(secret) {
   return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-async function createPhotoReference(photo, secret) {
+async function createPhotoReference(photo, secret, key = photo.objectKey) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = encoder.encode(JSON.stringify({ key: photo.objectKey, version: photo.version }));
+  const plaintext = encoder.encode(JSON.stringify({ key, version: photo.version }));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await referenceKey(secret), plaintext);
   const payload = new Uint8Array(iv.length + ciphertext.byteLength);
   payload.set(iv);
@@ -134,8 +136,11 @@ export function normalizePhotoRequest(searchParams) {
     exp: Number(searchParams.get('exp')),
     ref: searchParams.get('ref') || '',
   };
+  const variant = searchParams.get('variant') || '';
   if (!/^[A-Za-z0-9._-]{1,40}$/.test(value.version) || !Number.isSafeInteger(value.exp)
-    || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)) return null;
+    || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)
+    || (variant && variant !== 'avif')) return null;
+  if (variant) value.variant = variant;
   return value;
 }
 
@@ -155,10 +160,16 @@ async function rateLimit(request, env) {
   return (await env.PHOTO_RATE_LIMITER.limit({ key })).success;
 }
 
-function signedImageUrl(baseUrl, photo, exp, ref, signature) {
+function signedImageUrl(baseUrl, photo, exp, ref, signature, variant = 'original') {
   const url = new URL(`${baseUrl}/photo/image/${photo.assetId}`);
-  url.search = new URLSearchParams({ v: photo.version, exp: String(exp), ref, sig: signature });
+  const params = new URLSearchParams({ v: photo.version, exp: String(exp), ref, sig: signature });
+  if (variant !== 'original') params.set('variant', variant);
+  url.search = params;
   return url.toString();
+}
+
+function avifKeyFor(objectKey) {
+  return objectKey.replace(/\.jpe?g$/i, '.avif');
 }
 
 async function publicPhoto(photo, baseUrl, exp, secret) {
@@ -172,6 +183,10 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
   const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref }, secret);
   const url = signedImageUrl(baseUrl, photo, exp, ref, signature);
   result.original = { url };
+  const avifKey = avifKeyFor(photo.objectKey);
+  const avifRef = await createPhotoReference(photo, secret, avifKey);
+  const avifSignature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref: avifRef, variant: 'avif' }, secret);
+  result.thumbnail = { url: signedImageUrl(baseUrl, photo, exp, avifRef, avifSignature, 'avif') };
   // Retain the old response shape for already-deployed clients during rollout.
   const legacyEntry = { width: 2400, url };
   result.images = {
@@ -197,7 +212,11 @@ async function handlePhotoImage(request, env, cors, assetId) {
   if (!photoRequest || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
   if (!await verifyPhotoSignature(assetId, photoRequest, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
   const reference = await readPhotoReference(photoRequest.ref, env.PHOTO_SIGNING_SECRET);
-  if (!reference || reference.version !== photoRequest.version || !/\.jpe?g$/i.test(reference.key)) return jsonResponse({ error: 'Image not found' }, 404, cors);
+  const isAvif = photoRequest.variant === 'avif';
+  if (!reference || reference.version !== photoRequest.version
+    || (isAvif ? !/\.avif$/i.test(reference.key) : !/\.jpe?g$/i.test(reference.key))) {
+    return jsonResponse({ error: 'Image not found' }, 404, cors);
+  }
   if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
 
   const canonicalUrl = new URL(url);
@@ -213,7 +232,7 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const object = await env.photo.get(reference.key);
   if (!object) return jsonResponse({ error: 'Image not found' }, 404, cors);
   const headers = photoHeaders(cors);
-  headers.set('Content-Type', 'image/jpeg');
+  headers.set('Content-Type', isAvif ? 'image/avif' : 'image/jpeg');
   headers.set('Content-Disposition', 'inline');
   headers.set('Content-Length', String(object.size));
   headers.set('ETag', object.httpEtag);

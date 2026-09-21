@@ -77,6 +77,30 @@ test('signed image route returns the R2 JPG bytes without Images transformation'
   clearPhotoCatalogCache();
 });
 
+test('manifest exposes a signed AVIF thumbnail while retaining the signed JPG original', async () => {
+  clearPhotoCatalogCache();
+  const original = {
+    key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
+    uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
+  };
+  const avif = { key: '风光/original.avif', size: 3, httpEtag: '"etag-avif"', body: new Uint8Array([5, 6, 7]) };
+  const bucket = {
+    list: async () => ({ objects: [original], truncated: false }),
+    get: async (key) => key === original.key ? original : key === avif.key ? avif : null,
+  };
+  const directEnv = { ...env, photo: bucket };
+  const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
+  const manifest = await manifestResponse.json();
+  const photo = manifest.photos[0];
+  assert.match(photo.thumbnail.url, /variant=avif/);
+  assert.equal(new URL(photo.original.url).searchParams.has('variant'), false);
+  const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers: trustedHeaders }), directEnv);
+  assert.equal(imageResponse.status, 200);
+  assert.equal(imageResponse.headers.get('content-type'), 'image/avif');
+  assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), avif.body);
+  clearPhotoCatalogCache();
+});
+
 test('original image requests accept only signed reference fields', () => {
   const valid = new URLSearchParams(`v=demo-1&exp=2000000000&ref=${opaqueRef}`);
   const invalid = new URLSearchParams(`v=demo-1&exp=invalid&ref=${opaqueRef}`);

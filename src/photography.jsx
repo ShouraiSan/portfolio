@@ -7,7 +7,12 @@ const remotePhotoBase = 'https://portfolio-media.jlmafuture.workers.dev/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
 function Picture({ photo, mode, onLoad, onError }) {
-  const url = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
+  const isThumbnail = mode === 'thumbnail';
+  const [usingOriginalFallback, setUsingOriginalFallback] = useState(false);
+  const thumbnailUrl = photo.thumbnail?.url;
+  const originalUrl = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
+  const url = isThumbnail && !usingOriginalFallback ? (thumbnailUrl || originalUrl) : originalUrl;
+  useEffect(() => setUsingOriginalFallback(false), [photo.assetId, thumbnailUrl, mode]);
   if (!url) return null;
 
   return <picture>
@@ -19,7 +24,10 @@ function Picture({ photo, mode, onLoad, onError }) {
       draggable="false"
       onContextMenu={(event) => event.preventDefault()}
       onLoad={onLoad}
-      onError={onError}
+      onError={(event) => {
+        if (isThumbnail && thumbnailUrl && !usingOriginalFallback && originalUrl) setUsingOriginalFallback(true);
+        else onError?.(event);
+      }}
     />
   </picture>;
 }
