@@ -26,10 +26,6 @@ const demoCatalog = {
 };
 
 const SIGNATURE_TTL_SECONDS = 15 * 60;
-export const THUMBNAIL_WIDTHS = [320, 640, 1280];
-export const THUMBNAIL_CACHE_CONTROL = 'public, max-age=31536000, immutable';
-const THUMBNAIL_PREFIX = '_thumbnails';
-const THUMBNAIL_QUALITY = 68;
 const encoder = new TextEncoder();
 
 function trustedOrigins(env) {
@@ -103,9 +99,7 @@ function constantTimeEqual(left, right) {
 }
 
 function signaturePayload(assetId, variant) {
-  const payload = [assetId, variant.version, variant.exp, variant.ref || ''];
-  if (variant.variant && variant.variant !== 'original') payload.push(variant.variant);
-  return payload.join('|');
+  return [assetId, variant.version, variant.exp, variant.ref || ''].join('|');
 }
 
 async function referenceKey(secret) {
@@ -113,9 +107,9 @@ async function referenceKey(secret) {
   return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['encrypt', 'decrypt']);
 }
 
-async function createPhotoReference(photo, secret, key = photo.objectKey) {
+async function createPhotoReference(photo, secret) {
   const iv = crypto.getRandomValues(new Uint8Array(12));
-  const plaintext = encoder.encode(JSON.stringify({ key, version: photo.version }));
+  const plaintext = encoder.encode(JSON.stringify({ key: photo.objectKey, version: photo.version }));
   const ciphertext = await crypto.subtle.encrypt({ name: 'AES-GCM', iv }, await referenceKey(secret), plaintext);
   const payload = new Uint8Array(iv.length + ciphertext.byteLength);
   payload.set(iv);
@@ -140,11 +134,8 @@ export function normalizePhotoRequest(searchParams) {
     exp: Number(searchParams.get('exp')),
     ref: searchParams.get('ref') || '',
   };
-  const variant = searchParams.get('variant') || '';
   if (!/^[A-Za-z0-9._-]{1,40}$/.test(value.version) || !Number.isSafeInteger(value.exp)
-    || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)
-    || (variant && !/^(?:original|avif-(?:320|640|1280))$/.test(variant))) return null;
-  if (variant) value.variant = variant;
+    || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)) return null;
   return value;
 }
 
@@ -164,28 +155,10 @@ async function rateLimit(request, env) {
   return (await env.PHOTO_RATE_LIMITER.limit({ key })).success;
 }
 
-function signedImageUrl(baseUrl, photo, exp, ref, signature, variant = 'original') {
+function signedImageUrl(baseUrl, photo, exp, ref, signature) {
   const url = new URL(`${baseUrl}/photo/image/${photo.assetId}`);
-  const params = new URLSearchParams({ v: photo.version, exp: String(exp), ref, sig: signature });
-  if (variant !== 'original') params.set('variant', variant);
-  url.search = params;
+  url.search = new URLSearchParams({ v: photo.version, exp: String(exp), ref, sig: signature });
   return url.toString();
-}
-
-export function thumbnailKey(sourceKey, width) {
-  if (!THUMBNAIL_WIDTHS.includes(width)) throw new Error('Unsupported thumbnail width');
-  return `${THUMBNAIL_PREFIX}/${width}/${sourceKey.replace(/\.jpe?g$/i, '')}.avif`;
-}
-
-function thumbnailVariant(width) {
-  return `avif-${width}`;
-}
-
-async function signedPhotoVariant(photo, baseUrl, exp, secret, width) {
-  const variant = thumbnailVariant(width);
-  const ref = await createPhotoReference(photo, secret, thumbnailKey(photo.objectKey, width));
-  const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref, variant }, secret);
-  return { width, url: signedImageUrl(baseUrl, photo, exp, ref, signature, variant) };
 }
 
 async function publicPhoto(photo, baseUrl, exp, secret) {
@@ -199,9 +172,6 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
   const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref }, secret);
   const url = signedImageUrl(baseUrl, photo, exp, ref, signature);
   result.original = { url };
-  result.thumbnails = {
-    avif: await Promise.all(THUMBNAIL_WIDTHS.map((width) => signedPhotoVariant(photo, baseUrl, exp, secret, width))),
-  };
   // Retain the old response shape for already-deployed clients during rollout.
   const legacyEntry = { width: 2400, url };
   result.images = {
@@ -227,14 +197,7 @@ async function handlePhotoImage(request, env, cors, assetId) {
   if (!photoRequest || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
   if (!await verifyPhotoSignature(assetId, photoRequest, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
   const reference = await readPhotoReference(photoRequest.ref, env.PHOTO_SIGNING_SECRET);
-  const requestVariant = photoRequest.variant || 'original';
-  const isOriginal = requestVariant === 'original';
-  const isThumbnail = /^avif-(?:320|640|1280)$/.test(requestVariant);
-  if (!reference || reference.version !== photoRequest.version
-    || (isOriginal && !/\.jpe?g$/i.test(reference.key))
-    || (isThumbnail && !/^_thumbnails\/(?:320|640|1280)\/.*\.avif$/i.test(reference.key))) {
-    return jsonResponse({ error: 'Image not found' }, 404, cors);
-  }
+  if (!reference || reference.version !== photoRequest.version || !/\.jpe?g$/i.test(reference.key)) return jsonResponse({ error: 'Image not found' }, 404, cors);
   if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
 
   const canonicalUrl = new URL(url);
@@ -250,71 +213,15 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const object = await env.photo.get(reference.key);
   if (!object) return jsonResponse({ error: 'Image not found' }, 404, cors);
   const headers = photoHeaders(cors);
-  headers.set('Content-Type', isThumbnail ? 'image/avif' : 'image/jpeg');
+  headers.set('Content-Type', 'image/jpeg');
   headers.set('Content-Disposition', 'inline');
   headers.set('Content-Length', String(object.size));
   headers.set('ETag', object.httpEtag);
-  headers.set('Cache-Control', THUMBNAIL_CACHE_CONTROL);
-  headers.set('CDN-Cache-Control', THUMBNAIL_CACHE_CONTROL);
+  headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+  headers.set('CDN-Cache-Control', 'public, max-age=31536000, immutable');
   const response = new Response(object.body, { status: 200, headers });
   if (cache) await cache.put(cacheKey, response.clone());
   return request.method === 'HEAD' ? new Response(null, response) : response;
-}
-
-function sourceKeyFromQueueMessage(body) {
-  let value = body;
-  if (typeof value === 'string') {
-    try { value = JSON.parse(value); } catch { return ''; }
-  }
-  return value?.object?.key || value?.key || '';
-}
-
-export function queueSourceKey(message) {
-  const key = sourceKeyFromQueueMessage(message?.body ?? message);
-  return typeof key === 'string' && /^.+\.jpe?g$/i.test(key) && !key.startsWith(`${THUMBNAIL_PREFIX}/`) ? key : '';
-}
-
-async function transformedBody(output) {
-  if (typeof output?.image === 'function') return output.image();
-  if (typeof output?.response === 'function') return (await output.response()).body;
-  return output?.body || output;
-}
-
-export async function generatePhotoThumbnails(sourceKey, env) {
-  if (!env.photo?.get || !env.photo?.put) throw new Error('Photo R2 binding is unavailable');
-  if (!env.IMAGES?.input) throw new Error('Images Transformations binding is unavailable');
-  const source = await env.photo.get(sourceKey);
-  if (!source) return { sourceKey, generated: [], skipped: true };
-  const image = env.IMAGES.input(source.body);
-  const generated = [];
-  for (const width of THUMBNAIL_WIDTHS) {
-    const output = await image.transform({ width, fit: 'scale-down' }).output({ format: 'image/avif', quality: THUMBNAIL_QUALITY });
-    const key = thumbnailKey(sourceKey, width);
-    await env.photo.put(key, await transformedBody(output), {
-      httpMetadata: { contentType: 'image/avif', cacheControl: THUMBNAIL_CACHE_CONTROL },
-      customMetadata: { sourceKey, width: String(width), generatedAt: new Date().toISOString() },
-    });
-    generated.push(key);
-  }
-  return { sourceKey, generated, skipped: false };
-}
-
-async function consumePhotoThumbnailQueue(batch, env) {
-  for (const message of batch.messages || []) {
-    const sourceKey = queueSourceKey(message);
-    if (!sourceKey) {
-      message.ack?.();
-      continue;
-    }
-    try {
-      await generatePhotoThumbnails(sourceKey, env);
-      message.ack?.();
-    } catch (error) {
-      // Queue retries keep a failed conversion isolated from the original R2 upload.
-      message.retry?.();
-      if (!message.retry) throw error;
-    }
-  }
 }
 
 export async function handlePhotoRequest(request, env, cors) {
@@ -367,8 +274,5 @@ export default {
       headers.set('Content-Length', String(range.length));
     } else headers.set('Content-Length', String(object.size));
     return new Response(request.method === 'HEAD' ? null : object.body, { status: range ? 206 : 200, headers });
-  },
-  async queue(batch, env) {
-    return consumePhotoThumbnailQueue(batch, env);
   },
 };

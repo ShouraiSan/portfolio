@@ -7,15 +7,8 @@ const remotePhotoBase = 'https://portfolio-media.jlmafuture.workers.dev/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
 function Picture({ photo, mode, onLoad, onError }) {
-  const [thumbnailFailed, setThumbnailFailed] = useState(false);
-  const isThumbnail = mode === 'thumbnail';
-  const avifVariants = photo.thumbnails?.avif || [];
-  const avifUrl = avifVariants.find((item) => item.width === 640)?.url;
-  const url = isThumbnail ? avifUrl : photo.original?.url;
-  useEffect(() => setThumbnailFailed(false), [photo.assetId, avifUrl]);
-  if (!url || (isThumbnail && thumbnailFailed)) {
-    return isThumbnail ? <div className="photo-thumbnail-state" role="status">THUMBNAIL PENDING</div> : null;
-  }
+  const url = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
+  if (!url) return null;
 
   return <picture>
     <img
@@ -26,10 +19,7 @@ function Picture({ photo, mode, onLoad, onError }) {
       draggable="false"
       onContextMenu={(event) => event.preventDefault()}
       onLoad={onLoad}
-      onError={(event) => {
-        if (isThumbnail) setThumbnailFailed(true);
-        else onError?.(event);
-      }}
+      onError={onError}
     />
   </picture>;
 }

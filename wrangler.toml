@@ -16,17 +16,6 @@ binding = "photo"
 bucket_name = "photo"
 remote = true
 
-# Cloudflare Images Transformations binding used by the queue consumer.
-[images]
-binding = "IMAGES"
-
-[[queues.consumers]]
-queue = "photo-thumbnail-jobs"
-max_batch_size = 5
-max_batch_timeout = 30
-max_retries = 5
-dead_letter_queue = "photo-thumbnail-failures"
-
 [[ratelimits]]
 name = "PHOTO_RATE_LIMITER"
 namespace_id = "1001"
