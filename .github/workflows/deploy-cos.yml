@@ -1,0 +1,65 @@
+name: Deploy to Tencent COS
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: cos-deploy
+  cancel-in-progress: true
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup pnpm
+        uses: pnpm/action-setup@v4
+        with:
+          version: 11
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: pnpm
+
+      - name: Build
+        run: |
+          pnpm install --frozen-lockfile
+          pnpm run build
+        env:
+          VITE_MEDIA_BASE_URL: ${{ vars.VITE_MEDIA_BASE_URL }}
+
+      - name: Install coscmd
+        run: python3 -m pip install --upgrade coscmd
+
+      - name: Upload to COS
+        env:
+          SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
+          SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
+          BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
+          REGION: ${{ secrets.TENCENT_COS_REGION }}
+        run: |
+          set -euo pipefail
+          if [ -z "${SECRET_ID}" ] || [ -z "${SECRET_KEY}" ] || [ -z "${BUCKET}" ] || [ -z "${REGION}" ]; then
+            echo "::error::缺少 COS 相关 Secrets（TENCENT_CLOUD_SECRET_ID / TENCENT_CLOUD_SECRET_KEY / TENCENT_COS_BUCKET / TENCENT_COS_REGION），请先在 Settings → Secrets and variables → Actions 中配置。"
+            exit 1
+          fi
+
+          coscmd config -a "${SECRET_ID}" -s "${SECRET_KEY}" -b "${BUCKET}" -r "${REGION}"
+
+          # 只依赖 coscmd 最基础、跨版本稳定的递归上传语法，
+          # 不传逐文件 Header / include / ignore 等语义不完全确定的参数。
+          # 缓存策略请在 COS 控制台配置（见部署说明），更可靠。
+          coscmd upload -r ./dist/ /
+
+          # 清掉 runner 上的临时凭据文件
+          rm -f ~/.cos.conf
+          echo "上传完成"
