@@ -4,6 +4,11 @@ on:
   push:
     branches: [main]
   workflow_dispatch:
+    inputs:
+      sync_delete:
+        description: '部署后删除 COS 上多余的旧文件（需子用户具备 cos:DeleteObject 权限）'
+        type: boolean
+        default: false
 
 permissions:
   contents: read
@@ -51,6 +56,7 @@ jobs:
           SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
           BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
           REGION: ${{ secrets.TENCENT_COS_REGION }}
+          INPUT_SYNC_DELETE: ${{ inputs.sync_delete }}
         run: |
           set -euo pipefail
 
@@ -101,11 +107,48 @@ jobs:
           echo "文件总数: $(find ./dist -type f | wc -l)  总字节: $(du -sb ./dist | cut -f1)"
           echo "::endgroup::"
 
+          # 按文件类型分别上传，以便对不同类型设置不同缓存策略。
+          #
+          # -H 的取值经查 coscmd 源码确认：cos_comm.py 的 maplist 里存在
+          # 'Cache-Control': 'CacheControl' 映射，因此会真正作用到 PUT 请求；
+          # 未在映射表中的头会被放进 x-cos-meta-*，不会成为缓存头。
+          #
+          # -s（sync）会跳过「同名同大小」的文件，使重复部署变快。
           # -d 打开 debug 日志，让每个文件的上传/跳过都可见。
-          # 只依赖 coscmd 最基础的递归上传语法，不传语义不完全确定的参数。
-          echo "::group::coscmd upload"
-          coscmd -d upload -r ./dist/ /
+          #
+          # 上传顺序有讲究：assets 先传（长缓存），HTML 最后传（不缓存）。
+          # 因为 -s 会跳过重复文件，先传的 Header 会保留，所以「最终生效」的
+          # 应该是最后上传的那一组 —— HTML 放最后，确保其 no-cache 一定生效。
+          echo "::group::上传 assets（内容哈希文件名，可长期强缓存）"
+          coscmd -d upload -rs ./dist/assets/ /assets/ -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
           echo "::endgroup::"
+
+          echo "::group::上传 favicon（文件名不含哈希，用中等缓存）"
+          coscmd -d upload -rs ./dist/favicon.svg /favicon.svg -H '{"Cache-Control":"public, max-age=86400"}'
+          echo "::endgroup::"
+
+          echo "::group::上传 HTML（入口文件，必须不缓存）"
+          coscmd -d upload -rs ./dist/ / --include '*.html' -H '{"Cache-Control":"no-cache"}'
+          echo "::endgroup::"
+
+          # 可选：删除 COS 上多余的历史文件。
+          # 默认关闭；关闭时绝不执行任何删除动作。
+          # 注意：这一项依赖子用户具备 cos:DeleteObject 权限，
+          #       用第三步的「最小权限方案 B」会因缺少该权限而失败。
+          if [ "${INPUT_SYNC_DELETE:-false}" = "true" ]; then
+            echo "::group::同步删除多余旧文件（sync_delete=true）"
+            if coscmd -d upload -rs ./dist/ / --delete -y; then
+              echo "::notice::旧文件清理完成"
+            else
+              echo "::error::清理失败：子用户可能缺少 cos:DeleteObject 权限。"
+              echo "::error::请在 CAM 策略中加入 cos:DeleteObject 后重试，或把 sync_delete 改回 false。"
+              rm -f ~/.cos.conf
+              exit 1
+            fi
+            echo "::endgroup::"
+          else
+            echo "::notice::未启用 sync_delete，跳过旧文件清理（COS 上可能保留历史版本的文件）"
+          fi
 
           echo "::group::上传后桶内对象（coscmd list）"
           if ! coscmd list -a -r; then
@@ -113,25 +156,38 @@ jobs:
           fi
           echo "::endgroup::"
 
-          # 以 COS 侧的真实 HTTP 响应验证，避免只看 coscmd 的自述结果。
-          # 同时探测静态网站端点与默认端点：任一返回 200 即视为上传成功，
-          # 以免「静态网站功能未开启」被误判成上传失败。
-          site_url="https://${BUCKET}.cos-website.${REGION}.myqcloud.com/index.html"
-          api_url="https://${BUCKET}.cos.${REGION}.myqcloud.com/index.html"
-          ok=0
-          for url in "${site_url}" "${api_url}"; do
-            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}" || echo "000")
-            echo "  ${url} -> HTTP ${code}"
-            [ "$code" = "200" ] && ok=1
+          # 以 COS 侧的真实 HTTP 响应验证具体对象的可达性（而不是只信 coscmd 的自述结果）。
+          # HTML 只探测静态网站端点：默认端点对浏览器会触发下载，不参与判定。
+          site="https://${BUCKET}.cos-website.${REGION}.myqcloud.com"
+          echo "静态网站端点: ${site}"
+
+          html_ok=0
+          for page in index.html capabilities.html photography.html; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${site}/${page}" || echo "000")
+            echo "  ${page} -> HTTP ${code}"
+            [ "$code" = "200" ] && html_ok=1
           done
 
-          if [ "$ok" = "1" ]; then
-            echo "::notice::上传验证通过：COS 侧已能返回 index.html"
-          else
-            echo "::error::上传验证失败：两个端点都没返回 200，说明对象没有落到桶根目录。"
-            echo "::error::请把上面两个 group 的日志（本地文件清单 + coscmd list 结果）发给助手定位。"
+          # 资源用默认端点读取，因为 coscmd 设置的缓存头只有在服务端真实返回时才算生效。
+          asset_ok=0
+          for f in $(find ./dist/assets -type f \( -name '*.js' -o -name '*.css' \) | head -3); do
+            key="${f#./dist/}"
+            meta=$(curl -s -o /dev/null -D - --max-time 20 "https://${BUCKET}.cos.${REGION}.myqcloud.com/${key}" 2>/dev/null || true)
+            code=$(printf '%s' "$meta" | head -1 | awk '{print $2}')
+            cache=$(printf '%s' "$meta" | tr -d '\r' | awk 'tolower($1)=="cache-control:"{ $1=""; sub(/^ /,""); print; exit }')
+            echo "  ${key} -> HTTP ${code}  Cache-Control: ${cache:-<无>}"
+            [ "$code" = "200" ] && asset_ok=1
+          done
+
+          if [ "$html_ok" = "1" ] && [ "$asset_ok" = "1" ]; then
+            echo "::notice::部署验证通过：页面可达且资源缓存头已生效"
+          elif [ "$html_ok" != "1" ]; then
+            echo "::error::页面验证失败：${site} 下三个入口页都不是 200。"
+            echo "::error::请把上面各 group 的日志（本地文件清单 + coscmd 输出 + coscmd list）发给助手定位。"
             rm -f ~/.cos.conf
             exit 1
+          else
+            echo "::warning::页面正常，但资源文件未取到（可能是文件名哈希变化导致探测未命中），不影响本次部署。"
           fi
 
           # 清掉 runner 上的临时凭据文件
