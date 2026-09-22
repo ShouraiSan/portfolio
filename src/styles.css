@@ -38,6 +38,10 @@
 .photo-filter-options{background:#242426c7;border-color:#ffffff1c;box-shadow:inset 0 1px 0 #ffffff20,inset 0 -1px 0 #00000080,0 14px 42px #00000052;backdrop-filter:blur(24px) saturate(180%)}.photo-filters .photo-filter-options button[aria-pressed=true]{background:#f5f5f7ed;box-shadow:inset 0 1px 1px #fff,0 4px 16px #00000052}.photo-filters .photo-filter-options button:not([aria-pressed=true]):hover{color:#fff}.photo-filter-label{backface-visibility:hidden}
 @media(prefers-reduced-motion:reduce){.photo-filter-label{transform:none!important;transition:none!important;text-shadow:none!important}}
 
+/* Safari normalizes native button metrics differently from Chromium. */
+.photo-filters .photo-filter-options button{width:76px;height:38px;min-width:76px;min-height:38px;padding:0;display:inline-flex;align-items:center;justify-content:center;appearance:none;-webkit-appearance:none;font:500 12px/1 Manrope,sans-serif;text-align:center;vertical-align:middle}
+@media(max-width:700px){.photo-filters .photo-filter-options button{width:66px;height:38px;min-width:66px;min-height:38px;padding:0}}
+
 /* Keep the active mobile category centered in the horizontal filter rail. */
 @media(max-width:700px){.photo-filters>.photo-filter-inner{scroll-padding-inline:50%}.photo-filters .photo-filter-options button{scroll-margin-inline:calc(50% - 33px)}}
 
