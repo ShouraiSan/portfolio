@@ -22,7 +22,12 @@ jobs:
       - name: Setup pnpm
         uses: pnpm/action-setup@v4
         with:
-          version: 11
+          # 不指定 version：版本由 package.json 的 packageManager 字段决定
+          # （"pnpm@11.19.0"）。同时指定两处会让 action 直接报
+          # "Multiple versions of pnpm specified" 并中止。
+          # 同时关闭它自带的 install，统一由下面的 Build 步骤执行，
+          # 以便使用 --frozen-lockfile。
+          run_install: false
 
       - name: Setup Node
         uses: actions/setup-node@v4
