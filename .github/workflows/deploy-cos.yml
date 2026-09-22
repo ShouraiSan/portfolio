@@ -53,10 +53,46 @@ jobs:
           REGION: ${{ secrets.TENCENT_COS_REGION }}
         run: |
           set -euo pipefail
-          if [ -z "${SECRET_ID}" ] || [ -z "${SECRET_KEY}" ] || [ -z "${BUCKET}" ] || [ -z "${REGION}" ]; then
-            echo "::error::缺少 COS 相关 Secrets（TENCENT_CLOUD_SECRET_ID / TENCENT_CLOUD_SECRET_KEY / TENCENT_COS_BUCKET / TENCENT_COS_REGION），请先在 Settings → Secrets and variables → Actions 中配置。"
+
+          # 注意：本步骤的环境变量名是 SECRET_ID / SECRET_KEY / BUCKET / REGION
+          # （由上面的 env: 映射而来），不要用 GitHub 上的 Secret 名去读。
+          missing=""
+          [ -z "${SECRET_ID:-}" ]  && missing="$missing TENCENT_CLOUD_SECRET_ID"
+          [ -z "${SECRET_KEY:-}" ] && missing="$missing TENCENT_CLOUD_SECRET_KEY"
+          [ -z "${BUCKET:-}" ]     && missing="$missing TENCENT_COS_BUCKET"
+          [ -z "${REGION:-}" ]     && missing="$missing TENCENT_COS_REGION"
+          if [ -n "$missing" ]; then
+            echo "::error::以下 Secrets 未配置或为空:$missing"
+            echo "::error::请在仓库 Settings → Secrets and variables → Actions 的 Secrets 页签中添加（注意不是 Variables 页签）。"
             exit 1
           fi
+
+          # GitHub 不会自动去掉首尾空白，带空格/换行的值会让 coscmd 报 AccessDenied。
+          # 只回显 Secret 名称，不回显值本身。
+          blank=""
+          for pair in "SECRET_ID:TENCENT_CLOUD_SECRET_ID" "SECRET_KEY:TENCENT_CLOUD_SECRET_KEY" "BUCKET:TENCENT_COS_BUCKET" "REGION:TENCENT_COS_REGION"; do
+            var="${pair%%:*}"
+            name="${pair##*:}"
+            eval "value=\${$var}"
+            trimmed="${value#"${value%%[![:space:]]*}"}"
+            trimmed="${trimmed%"${trimmed##*[![:space:]]}"}"
+            if [ "$value" != "$trimmed" ]; then
+              blank="$blank $name"
+            fi
+          done
+          if [ -n "$blank" ]; then
+            echo "::error::以下 Secrets 首尾含空格/Tab/换行，请重新编辑去掉:$blank"
+            exit 1
+          fi
+
+          case "$REGION" in
+            ap-*) ;;
+            *) echo "::warning::COS 地域 '$REGION' 不常见，请确认填写正确（广州为 ap-guangzhou，上海为 ap-shanghai）" ;;
+          esac
+          case "$BUCKET" in
+            *-*) ;;
+            *) echo "::warning::桶名 '$BUCKET' 不含 APPID，COS 桶名应为“名称-APPID”全称" ;;
+          esac
 
           coscmd config -a "${SECRET_ID}" -s "${SECRET_KEY}" -b "${BUCKET}" -r "${REGION}"
 
