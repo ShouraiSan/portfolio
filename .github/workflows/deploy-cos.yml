@@ -120,15 +120,15 @@ jobs:
           # 因为 -s 会跳过重复文件，先传的 Header 会保留，所以「最终生效」的
           # 应该是最后上传的那一组 —— HTML 放最后，确保其 no-cache 一定生效。
           echo "::group::上传 assets（内容哈希文件名，可长期强缓存）"
-          coscmd -d upload -rs ./dist/assets/ /assets/ -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
+          coscmd -d upload -rs ./dist/assets/ /assets/ -y -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
           echo "::endgroup::"
 
           echo "::group::上传 favicon（文件名不含哈希，用中等缓存）"
-          coscmd -d upload -rs ./dist/favicon.svg /favicon.svg -H '{"Cache-Control":"public, max-age=86400"}'
+          coscmd -d upload -rs ./dist/favicon.svg /favicon.svg -y -H '{"Cache-Control":"public, max-age=86400"}'
           echo "::endgroup::"
 
           echo "::group::上传 HTML（入口文件，必须不缓存）"
-          coscmd -d upload -rs ./dist/ / --include '*.html' -H '{"Cache-Control":"no-cache"}'
+          coscmd -d upload -rs ./dist/ / --include '*.html' -y -H '{"Cache-Control":"no-cache"}'
           echo "::endgroup::"
 
           # 可选：删除 COS 上多余的历史文件。
@@ -161,33 +161,92 @@ jobs:
           site="https://${BUCKET}.cos-website.${REGION}.myqcloud.com"
           echo "静态网站端点: ${site}"
 
-          html_ok=0
+          html_ok=1
+          html_failed=""
           for page in index.html capabilities.html photography.html; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${site}/${page}" || echo "000")
             echo "  ${page} -> HTTP ${code}"
-            [ "$code" = "200" ] && html_ok=1
+            if [ "$code" != "200" ]; then
+              html_ok=0
+              html_failed="${html_failed} ${page}(${code})"
+            fi
           done
 
           # 资源用默认端点读取，因为 coscmd 设置的缓存头只有在服务端真实返回时才算生效。
           asset_ok=0
+          assets_checked=0
+          assets_with_cache=0
+          asset_lines=""
           for f in $(find ./dist/assets -type f \( -name '*.js' -o -name '*.css' \) | head -3); do
             key="${f#./dist/}"
             meta=$(curl -s -o /dev/null -D - --max-time 20 "https://${BUCKET}.cos.${REGION}.myqcloud.com/${key}" 2>/dev/null || true)
             code=$(printf '%s' "$meta" | head -1 | awk '{print $2}')
             cache=$(printf '%s' "$meta" | tr -d '\r' | awk 'tolower($1)=="cache-control:"{ $1=""; sub(/^ /,""); print; exit }')
             echo "  ${key} -> HTTP ${code}  Cache-Control: ${cache:-<无>}"
+            assets_checked=$((assets_checked + 1))
             [ "$code" = "200" ] && asset_ok=1
+            [ -n "$cache" ] && assets_with_cache=$((assets_with_cache + 1))
+            asset_lines="${asset_lines}$(printf -- '- `%s` — HTTP %s — Cache-Control: `%s`\n' "$key" "$code" "${cache:-<无>}")"
           done
 
-          if [ "$html_ok" = "1" ] && [ "$asset_ok" = "1" ]; then
+          {
+            echo "## 部署结果"
+            echo ""
+            echo "- 访问地址: ${site}"
+            echo "- 上传文件数: $(find ./dist -type f | wc -l)"
+            echo "- 入口页全部 200: $([ "$html_ok" = "1" ] && echo '是' || echo "否 ->${html_failed}")"
+            echo "- 资源缓存头: ${assets_with_cache}/${assets_checked} 已生效"
+            echo ""
+            echo "### 资源响应头实测"
+            echo ""
+            printf '%s' "$asset_lines"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+          # 判定：页面必须可达，且缓存头必须真正生效。
+          if [ "$html_ok" != "1" ]; then
+            verdict="FAIL-页面不可达"
+          elif [ "$assets_checked" -gt 0 ] && [ "$assets_with_cache" -eq 0 ]; then
+            verdict="FAIL-缓存头未生效"
+          else
+            verdict="OK"
+          fi
+
+          # 把部署报告写入公开可读的 deploy-report.txt，便于用一次 HTTP 请求确认结果，
+          # 无需翻看 Actions 日志。注意：只写入元数据，绝不写入任何密钥。
+          report="deploy-report.txt"
+          {
+            echo "status=${verdict}"
+            echo "time=$(date -u '+%Y-%m-%dT%H:%M:%SZ')"
+            echo "commit=${GITHUB_SHA:0:7}"
+            echo "site=${site}"
+            echo "files=$(find ./dist -type f | wc -l)"
+            echo "pages_ok=$([ "$html_ok" = "1" ] && echo yes || echo "no${html_failed}")"
+            echo "assets_cache=${assets_with_cache}/${assets_checked}"
+            echo "sync_delete=${INPUT_SYNC_DELETE:-false}"
+          } > "${report}"
+
+          echo "::group::部署报告 ${report}"
+          cat "${report}"
+          echo "::endgroup::"
+          cat "${report}" >> "$GITHUB_STEP_SUMMARY"
+
+          # 报告也要上传，但此时凭据即将删除，单独明确处理失败
+          if ! coscmd upload "${report}" "/${report}" -y -H '{"Cache-Control":"no-cache"}'; then
+            echo "::warning::部署报告上传失败（不影响站点内容）"
+          fi
+          rm -f "${report}"
+
+          if [ "$verdict" = "OK" ]; then
             echo "::notice::部署验证通过：页面可达且资源缓存头已生效"
           elif [ "$html_ok" != "1" ]; then
-            echo "::error::页面验证失败：${site} 下三个入口页都不是 200。"
-            echo "::error::请把上面各 group 的日志（本地文件清单 + coscmd 输出 + coscmd list）发给助手定位。"
+            echo "::error::页面验证失败：以下入口页不是 200:${html_failed}"
             rm -f ~/.cos.conf
             exit 1
           else
-            echo "::warning::页面正常，但资源文件未取到（可能是文件名哈希变化导致探测未命中），不影响本次部署。"
+            echo "::error::缓存头未生效：检查了 ${assets_checked} 个资源，没有任何一个返回 Cache-Control。"
+            echo "::error::请把运行页面的 Summary 发给助手定位。"
+            rm -f ~/.cos.conf
+            exit 1
           fi
 
           # 清掉 runner 上的临时凭据文件
