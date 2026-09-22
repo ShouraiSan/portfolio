@@ -301,6 +301,15 @@ function Photography() {
     setLightboxIndex(visiblePhotos.findIndex((item) => item.assetId === photo.assetId));
   };
 
+  const selectCategory = (item, button) => {
+    resetFilterMotion();
+    setCategory(item);
+    setLightboxIndex(null);
+    if (window.matchMedia('(max-width: 700px)').matches) {
+      requestAnimationFrame(() => button.scrollIntoView({ behavior: 'smooth', block: 'nearest', inline: 'center' }));
+    }
+  };
+
   return <main className="photography-page">
     <header className="sub-nav photo-nav shell"><a className="logo" href="./">Kensym<span>®</span></a><a className="back-link" href="./"><ArrowLeft size={16}/> 返回首页</a></header>
     <section className="photo-heading shell" id="photo-top">
@@ -312,7 +321,7 @@ function Photography() {
 
     {manifest && <nav className="photo-filters" id="photo-archive" aria-label="摄影作品分类"><div ref={filterRef} className="shell photo-filter-inner" onPointerMove={moveFilters} onPointerLeave={resetFilterMotion}>
       <div className="photo-filter-options">
-        {manifest.categories.map((item) => <button type="button" key={item} aria-pressed={category === item} onClick={() => { setCategory(item); setLightboxIndex(null); }}><span className="photo-filter-label">{item}</span></button>)}
+        {manifest.categories.map((item) => <button type="button" key={item} aria-pressed={category === item} onClick={(event) => selectCategory(item, event.currentTarget)}><span className="photo-filter-label">{item}</span></button>)}
       </div>
       <span className="photo-filter-count">{String(visiblePhotos.length).padStart(2, '0')} FRAMES</span>
     </div></nav>}
