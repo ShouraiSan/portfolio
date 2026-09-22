@@ -96,10 +96,43 @@ jobs:
 
           coscmd config -a "${SECRET_ID}" -s "${SECRET_KEY}" -b "${BUCKET}" -r "${REGION}"
 
-          # 只依赖 coscmd 最基础、跨版本稳定的递归上传语法，
-          # 不传逐文件 Header / include / ignore 等语义不完全确定的参数。
-          # 缓存策略请在 COS 控制台配置（见部署说明），更可靠。
-          coscmd upload -r ./dist/ /
+          echo "::group::本地待上传文件（dist 目录树）"
+          find ./dist -type f | sort
+          echo "文件总数: $(find ./dist -type f | wc -l)  总字节: $(du -sb ./dist | cut -f1)"
+          echo "::endgroup::"
+
+          # -d 打开 debug 日志，让每个文件的上传/跳过都可见。
+          # 只依赖 coscmd 最基础的递归上传语法，不传语义不完全确定的参数。
+          echo "::group::coscmd upload"
+          coscmd -d upload -r ./dist/ /
+          echo "::endgroup::"
+
+          echo "::group::上传后桶内对象（coscmd list）"
+          if ! coscmd list -a -r; then
+            echo "::warning::coscmd list 执行失败，无法列出对象"
+          fi
+          echo "::endgroup::"
+
+          # 以 COS 侧的真实 HTTP 响应验证，避免只看 coscmd 的自述结果。
+          # 同时探测静态网站端点与默认端点：任一返回 200 即视为上传成功，
+          # 以免「静态网站功能未开启」被误判成上传失败。
+          site_url="https://${BUCKET}.cos-website.${REGION}.myqcloud.com/index.html"
+          api_url="https://${BUCKET}.cos.${REGION}.myqcloud.com/index.html"
+          ok=0
+          for url in "${site_url}" "${api_url}"; do
+            code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${url}" || echo "000")
+            echo "  ${url} -> HTTP ${code}"
+            [ "$code" = "200" ] && ok=1
+          done
+
+          if [ "$ok" = "1" ]; then
+            echo "::notice::上传验证通过：COS 侧已能返回 index.html"
+          else
+            echo "::error::上传验证失败：两个端点都没返回 200，说明对象没有落到桶根目录。"
+            echo "::error::请把上面两个 group 的日志（本地文件清单 + coscmd list 结果）发给助手定位。"
+            rm -f ~/.cos.conf
+            exit 1
+          fi
 
           # 清掉 runner 上的临时凭据文件
           rm -f ~/.cos.conf
