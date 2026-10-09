@@ -54,19 +54,22 @@ jobs:
         env:
           SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
           SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
-          BUCKET: ${{ secrets.TENCENT_COS_BUCKET }}
-          REGION: ${{ secrets.TENCENT_COS_REGION }}
+          # 桶名与地域优先取 Secrets；未配置时回落到香港节点。
+          # 选香港（ap-hongkong）是因为它无需 ICP 备案即可绑定自定义域名；
+          # 上海（ap-shanghai）等大陆地域绑定自定义域名必须已完成备案。
+          # 备案通过后可把下面两个 Secret 改为大陆桶，无需改动本文件。
+          BUCKET: ${{ secrets.TENCENT_COS_BUCKET || 'photo-hk-1331415098' }}
+          REGION: ${{ secrets.TENCENT_COS_REGION || 'ap-hongkong' }}
           INPUT_SYNC_DELETE: ${{ inputs.sync_delete }}
         run: |
           set -euo pipefail
 
           # 注意：本步骤的环境变量名是 SECRET_ID / SECRET_KEY / BUCKET / REGION
           # （由上面的 env: 映射而来），不要用 GitHub 上的 Secret 名去读。
+          # BUCKET / REGION 已有默认值，所以只需校验密钥两项。
           missing=""
           [ -z "${SECRET_ID:-}" ]  && missing="$missing TENCENT_CLOUD_SECRET_ID"
           [ -z "${SECRET_KEY:-}" ] && missing="$missing TENCENT_CLOUD_SECRET_KEY"
-          [ -z "${BUCKET:-}" ]     && missing="$missing TENCENT_COS_BUCKET"
-          [ -z "${REGION:-}" ]     && missing="$missing TENCENT_COS_REGION"
           if [ -n "$missing" ]; then
             echo "::error::以下 Secrets 未配置或为空:$missing"
             echo "::error::请在仓库 Settings → Secrets and variables → Actions 的 Secrets 页签中添加（注意不是 Variables 页签）。"
