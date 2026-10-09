@@ -29,5 +29,8 @@ simple = { limit = 120, period = 60 }
 # 两者 host 不同，缺任意一个都会让对应访问方式下的图片请求 403。
 # "null" 用于浏览器在部分上下文（沙箱 iframe、部分扩展）发送 Origin: null 的情况；
 # 安全边界仍由 Referer 校验保证，缺少 Referer 的请求一律拒绝。
-ALLOWED_ORIGINS = "https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com,https://photo-1331415098.cos.ap-shanghai.myqcloud.com,https://kensym15.dpdns.org,https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173,null"
+#
+# 自定义域名 kensym15.top 必须同时列出裸域与 www：两者 host 不同，
+# 浏览器发出的 Origin 也会不同，缺任意一个都会是 403 + CORS 报错。
+ALLOWED_ORIGINS = "https://kensym15.top,https://www.kensym15.top,https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com,https://photo-1331415098.cos.ap-shanghai.myqcloud.com,https://kensym15.dpdns.org,https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173,null"
 PORTFOLIO_ORIGIN = "https://shouraisan.github.io/portfolio/"
