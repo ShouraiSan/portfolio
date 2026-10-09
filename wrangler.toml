@@ -39,8 +39,8 @@ simple = { limit = 120, period = 60 }
 # 两个域名都提供同一套页面，因此本白名单必须同时保留两者的全部变体，
 # 否则其中一侧的摄影图片会 403。日后新增或更换节点域名，务必同步更新此处。
 #
-# 香港节点（ap-hongkong）无需 ICP 备案即可绑定自定义域名，是当前选定的境外节点；
-# 大陆节点（ap-shanghai）即使不再作为站点来源，也保留在列表内，
-# 以便直接访问该端点预览时图片仍可加载。
-ALLOWED_ORIGINS = "https://kensym15.top,https://www.kensym15.top,https://photo-hk-1331415098.cos-website.ap-hongkong.myqcloud.com,https://photo-hk-1331415098.cos.ap-hongkong.myqcloud.com,https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com,https://photo-1331415098.cos.ap-shanghai.myqcloud.com,https://kensym15.dpdns.org,https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173,null"
+# 香港节点（ap-hongkong，桶 kensym-1331415098）无需 ICP 备案即可绑定自定义域名，
+# 是当前选定的境外节点；大陆节点（ap-shanghai，桶 photo-1331415098）即使
+# 不再作为站点来源，也保留在列表内，以便直接访问该端点预览时图片仍可加载。
+ALLOWED_ORIGINS = "https://kensym15.top,https://www.kensym15.top,https://kensym-1331415098.cos-website.ap-hongkong.myqcloud.com,https://kensym-1331415098.cos.ap-hongkong.myqcloud.com,https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com,https://photo-1331415098.cos.ap-shanghai.myqcloud.com,https://kensym15.dpdns.org,https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173,null"
 PORTFOLIO_ORIGIN = "https://shouraisan.github.io/portfolio/"

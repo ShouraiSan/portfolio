@@ -58,7 +58,7 @@ jobs:
           # 选香港（ap-hongkong）是因为它无需 ICP 备案即可绑定自定义域名；
           # 上海（ap-shanghai）等大陆地域绑定自定义域名必须已完成备案。
           # 备案通过后可把下面两个 Secret 改为大陆桶，无需改动本文件。
-          BUCKET: ${{ secrets.TENCENT_COS_BUCKET || 'photo-hk-1331415098' }}
+          BUCKET: ${{ secrets.TENCENT_COS_BUCKET || 'kensym-1331415098' }}
           REGION: ${{ secrets.TENCENT_COS_REGION || 'ap-hongkong' }}
           INPUT_SYNC_DELETE: ${{ inputs.sync_delete }}
         run: |
