@@ -44,10 +44,31 @@ function localPhotoApi() {
   }
 }
 
+// 站点的 HTML 与 JS 全部托管在同一来源（COS），模块脚本不需要 CORS。
+// 但 vite build 会给产物加上 crossorigin 属性，例如：
+//   <script type="module" crossorigin src="./assets/main-xxx.js">
+// crossorigin 会让浏览器对该脚本执行 CORS 校验，要求响应带
+// Access-Control-Allow-Origin；而腾讯云 COS 默认不返回该头，
+// 结果是浏览器拒绝执行脚本，页面（尤其摄影页的照片）完全不工作。
+// 这里把这些属性去掉，模块即可正常加载。
+function stripCrossorigin() {
+  const dropAttr = (html) => html
+    .replace(/\s+crossorigin(?:=("|')[^"']*\1)?/g, '')
+  return {
+    name: 'strip-crossorigin',
+    enforce: 'post',
+    transformIndexHtml: {
+      order: 'post',
+      handler: dropAttr,
+    },
+  }
+}
+
 export default defineConfig({
-  plugins: [react(), localPhotoApi()],
+  plugins: [react(), localPhotoApi(), stripCrossorigin()],
   base: './',
   build: {
+    modulePreload: false,
     rollupOptions: {
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
