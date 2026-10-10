@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
-import test from 'node:test';
-import worker, { cosAuthorization, createPhotoSignature, imageKeysFor, normalizePhotoRequest, originalKeysFor, thumbCandidates, verifyPhotoSignature } from '../src/index.js';
+import test, { mock } from 'node:test';
+import worker, { cosAuthorization, cosFetch, createPhotoSignature, signingPathname, imageKeysFor, normalizePhotoRequest, originalKeysFor, thumbCandidates, verifyPhotoSignature } from '../src/index.js';
 import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
@@ -673,4 +673,104 @@ test('cosAuthorization binds the host into the signature', async () => {
     return [kv.slice(0, index), kv.slice(index + 1)];
   }));
   assert.match(parts['q-signature'], /^[0-9a-f]{40}$/);
+});
+
+// 签名用的 pathname 必须是「解码形态」。
+//
+// 这是实测出来的坑：服务端在 403 响应里回显它参与计算的 FormatString，
+// 对请求路径 /thumbs/%E4%BA%BA%E5%83%8F/x.avif 它用的是解码后的 /thumbs/人像/x.avif。
+// 用编码形态签名 → SignatureDoesNotMatch；用解码形态 → 200。
+//
+// 单元测试与「官方 SDK 移植比对」都发现不了这一点，因为 SDK 的 pathname 本来就是
+// 未编码的原始 key。因此这里锁住的是 cosFetch 的行为：把 URL 的编码路径解码后再签。
+test('cosFetch signs the decoded pathname while requesting the encoded URL', async () => {
+  const encoded = '/thumbs/%E4%BA%BA%E5%83%8F/_DSC6557.avif';
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: typeof input === 'string' ? input : String(input), auth: init?.headers?.Authorization });
+    return new Response(new Uint8Array([1]), { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    await cosFetch({ COS_SECRET_ID: 'test-id-0001', COS_SECRET_KEY: 'test-key-0001' }, `https://cos.example.com${encoded}`);
+
+    assert.equal(calls.length, 1);
+    // 请求本身仍用编码路径发给服务端
+    assert.equal(new URL(calls[0].url).pathname, encoded);
+    assert.match(calls[0].auth || '', /^q-sign-algorithm=sha1&/);
+
+    // 关键断言：把授权里的签名换成「编码形态路径」的结果，两者必须不同。
+    // 若实现误用编码路径签名，下面两个值会相等，这条测试即失败。
+    const decodedAuth = await cosAuthorization({
+      secretId: 'test-id-0001', secretKey: 'test-key-0001', method: 'GET',
+      host: 'cos.example.com', pathname: decodeURIComponent(encoded), now: 1791644920,
+    });
+    const encodedAuth = await cosAuthorization({
+      secretId: 'test-id-0001', secretKey: 'test-key-0001', method: 'GET',
+      host: 'cos.example.com', pathname: encoded, now: 1791644920,
+    });
+    assert.notEqual(decodedAuth, encodedAuth, 'decoded and encoded pathnames must sign differently');
+
+    // 决定性断言：把 cosFetch 用到的「签名路径」直接取出来比对。
+    // 关键点是 signingPathname() 必须返回**解码形态** —— 若它退化成返回
+    // requestUrl.pathname（编码形态），下面第一条断言即失败。
+    // 这一条是用变异测试补上的：先前只校验签名是 40 位十六进制，
+    // 对「编码/解码」两种实现都成立，等于没测。
+    assert.equal(
+      signingPathname(new URL(`https://cos.example.com${encoded}`)),
+      '/thumbs/人像/_DSC6557.avif',
+    );
+    // 且该形态与编码形态确实不同（否则上面的断言无意义）
+    assert.notEqual(signingPathname(new URL(`https://cos.example.com${encoded}`)), encoded);
+
+    const parts = Object.fromEntries(calls[0].auth.split('&').map((kv) => {
+      const index = kv.indexOf('=');
+      return [kv.slice(0, index), kv.slice(index + 1)];
+    }));
+    assert.equal(parts['q-header-list'], 'host');
+    assert.equal(parts['q-url-param-list'], '');
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  // 闭环断言：冻结时间后，cosFetch 实际发出的 Authorization 必须与用解码路径
+  // 独立算出的那一版**逐字符相同**。这一条同时覆盖「signingPathname 正确」和
+  // 「cosFetch 确实调用了它」，因此能杀死「绕过 signingPathname」这类变异。
+  const fixedNow = 1791644920;
+  const frozenCalls = [];
+  globalThis.fetch = async (input, init) => {
+    frozenCalls.push({ auth: init?.headers?.Authorization });
+    return new Response(new Uint8Array([1]), { status: 200 });
+  };
+  try {
+    mock.timers.enable({ apis: ['Date'], now: fixedNow * 1000 });
+    await cosFetch({ COS_SECRET_ID: 'test-id-0001', COS_SECRET_KEY: 'test-key-0001' }, `https://cos.example.com${encoded}`);
+    mock.timers.reset();
+
+    const expected = await cosAuthorization({
+      secretId: 'test-id-0001', secretKey: 'test-key-0001', method: 'GET',
+      host: 'cos.example.com', pathname: '/thumbs/人像/_DSC6557.avif', now: fixedNow,
+    });
+    assert.equal(frozenCalls.length, 1);
+    assert.equal(frozenCalls[0].auth, expected);
+  } finally {
+    try { mock.timers.reset(); } catch { /* 已重置 */ }
+    globalThis.fetch = originalFetch;
+  }
+});
+
+test('cosFetch omits Authorization entirely without credentials', async () => {
+  const originalFetch = globalThis.fetch;
+  const calls = [];
+  globalThis.fetch = async (input, init) => {
+    calls.push({ auth: init?.headers?.Authorization });
+    return new Response(new Uint8Array([1]), { status: 200 });
+  };
+  try {
+    await cosFetch({}, 'https://cos.example.com/a.jpg');
+    assert.equal(calls.length, 1);
+    assert.equal(calls[0].auth, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
 });

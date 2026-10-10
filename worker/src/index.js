@@ -167,9 +167,29 @@ export async function cosAuthorization({ secretId, secretKey, method, host, path
   ].join('&');
 }
 
+// ── 签名用的 pathname 必须是「解码形态」 ──────────────────────────────────
+// 这一点极易搞错，且**只有对真实 COS 发请求才能发现**（单元测试与官方 SDK 移植
+// 都验证不出来，因为 SDK 的 pathname 本身就是未编码的原始 key）。
+//
+// 实测依据：服务端在 403 响应里回显它参与计算的 FormatString ——
+// 对请求路径 `/thumbs/%E4%BA%BA%E5%83%8F/_DSC6557.avif`，它用的是解码后的
+// `/thumbs/人像/_DSC6557.avif`。用解码形态签名 → 200；用编码形态 → SignatureDoesNotMatch。
+//
+// 因此这里对 requestUrl.pathname 做一次解码再签名，而实际请求仍用带编码的 URL 发出。
+function signingPathname(url) {
+  try {
+    return decodeURIComponent(url.pathname);
+  } catch {
+    // 路径含非法百分号序列时退回原样，避免因解码异常导致整个取图失败
+    return url.pathname;
+  }
+}
+export { signingPathname };
+
 // 统一出口：配了 COS 只读凭据就带签名请求，未配则维持匿名请求。
 // 这样密钥注入是渐进式的 —— rollout 期间站点不会因为缺少 secret 而中断。
-async function cosFetch(env, url) {
+// 导出是为了让真实桶验证脚本能直接调用生产实现，而不是另写一份副本。
+export async function cosFetch(env, url) {
   const secretId = String(env.COS_SECRET_ID || '');
   const secretKey = String(env.COS_SECRET_KEY || '');
   const requestUrl = new URL(url);
@@ -180,7 +200,7 @@ async function cosFetch(env, url) {
       secretKey,
       method: 'GET',
       host: requestUrl.host,
-      pathname: requestUrl.pathname,
+      pathname: signingPathname(requestUrl),
     });
   }
   return fetch(requestUrl, { method: 'GET', headers, signal: AbortSignal.timeout(30_000) });
