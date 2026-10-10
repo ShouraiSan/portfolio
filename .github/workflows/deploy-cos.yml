@@ -54,12 +54,19 @@ jobs:
         env:
           SECRET_ID: ${{ secrets.TENCENT_CLOUD_SECRET_ID }}
           SECRET_KEY: ${{ secrets.TENCENT_CLOUD_SECRET_KEY }}
-          # 桶名与地域优先取 Secrets；未配置时回落到香港节点。
-          # 选香港（ap-hongkong）是因为它无需 ICP 备案即可绑定自定义域名；
-          # 上海（ap-shanghai）等大陆地域绑定自定义域名必须已完成备案。
-          # 备案通过后可把下面两个 Secret 改为大陆桶，无需改动本文件。
-          BUCKET: ${{ secrets.TENCENT_COS_BUCKET || 'kensym-1331415098' }}
-          REGION: ${{ secrets.TENCENT_COS_REGION || 'ap-hongkong' }}
+          # 桶名与地域优先取 Secrets；未配置时回落到上海（大陆）节点。
+          # 选上海的原因：大陆地域的外网下行流量单价低于香港。
+          #
+          # 重要：大陆地域的 COS 绑定自定义域名必须已完成 ICP 备案。
+          # 备案完成前 kensym15.top 无法指向该桶，只能使用 COS 默认域名访问；
+          # 备案通过后把域名绑定到该桶即可，无需改动本文件。
+          #
+          # 如需临时切到香港桶（免备案、可绑自定义域名），
+          # 在仓库 Secrets 里添加 TENCENT_COS_BUCKET / TENCENT_COS_REGION 覆盖即可：
+          #   TENCENT_COS_BUCKET = kensym-1331415098
+          #   TENCENT_COS_REGION = ap-hongkong
+          BUCKET: ${{ secrets.TENCENT_COS_BUCKET || 'photo-1331415098' }}
+          REGION: ${{ secrets.TENCENT_COS_REGION || 'ap-shanghai' }}
           INPUT_SYNC_DELETE: ${{ inputs.sync_delete }}
         run: |
           set -euo pipefail
