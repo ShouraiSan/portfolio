@@ -634,18 +634,28 @@ COS_SECRET_KEY=...
 | Logo / 数字 / 小标签 | `DM Sans`（可变字重 400–600） | `--font-label` |
 | 中文回退 | `"Microsoft YaHei", sans-serif` | 两个变量里都带 |
 
-**字体文件在自己手上，不再依赖 Google**：
+**字体文件在自己手上，不再依赖 Google**。落地方式（即当初评估的「方案 A：放香港 COS 桶、与站点同源、文件名带 hash」）：
 
 ```
 src/fonts/manrope.woff2     24,836 bytes   可变字体，覆盖 300–600
 src/fonts/dm-sans.woff2     36,932 bytes   可变字体，覆盖 400–600
+        │
+        │ 构建时由 Vite 处理（这一步是「文件名带 hash」的来源）
+        ▼
+dist/assets/manrope-DHIcAJRg.woff2   ← 内容 hash
+dist/assets/dm-sans-Xz1IZZA0.woff2
+        │
+        ▼  CI（deploy-cos.yml）上传到香港 COS 桶 kensym-1331415098 / ap-hongkong
+https://<站点>/assets/manrope-DHIcAJRg.woff2
+        → 200, Content-Type: font/woff2, Cache-Control: public, max-age=31536000, immutable
 ```
 
 两条 `@font-face` 写在 `src/styles.css` 顶部（取代了原先指向 Google Fonts 的 `@import`），要点：
 
 - **两个文件都是可变字体**，一个文件覆盖全部用到的字重，因此只需两条 `@font-face`，用 `font-weight:300 600` 这样的**区间**声明。按静态字重拆分会下载 7 个文件、共 205 KB —— 实际只需 2 个、60 KB。
 - `unicode-range` 限定为 **latin 子集**：这两个字体本来就不含中文字形，加上这个声明后浏览器知道中文不必去下载它，直接走 `Microsoft YaHei`。
-- 字体放在 `src/fonts/`（不是 `public/`），让 **Vite 参与处理**：构建时自动加内容 hash 并重写成同目录相对路径 `./manrope-DHIcAJRg.woff2`。这样在域根（香港 COS）与 `/portfolio/`（GitHub Pages）两种基准下都能正确解析，而且因为落在 `dist/assets/` 里，**自动获得一年强缓存头**。
+- **源文件放 `src/fonts/` 而不是 `public/`，也不能直接丢进桶**：交给 Vite 处理才会得到内容 hash，而 hash 是「一年强缓存」的前提（手动放桶里只能起个固定名，改字体就得靠刷新缓存）。Vite 同时会把引用重写成同目录相对路径 `./manrope-DHIcAJRg.woff2`，这样在域根（香港 COS）与 `/portfolio/`（GitHub Pages）两种基准下都能正确解析，并且因为落在 `dist/assets/` 里而自动继承站点资源的缓存策略。
+- **两个节点各自同源提供**：国内节点从香港 COS 取，国外节点用 GitHub Pages 自带的 `/portfolio/assets/*.woff2`，互不跨源、互不依赖。
 
 > ⚠️ **踩过的坑：不要用 `public/fonts/` + 绝对路径 `/fonts/…`**。
 > 站点是双节点的，GitHub Pages 上站点在 `/portfolio/` 子路径下 —— 绝对路径 `/fonts/…` 会指向域根而 404。
