@@ -10,30 +10,60 @@ import './styles.css';
 const remotePhotoBase = 'https://kensym15.dpdns.org/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
+// 视口提前量：图片在进入视口下方 400px 时才开始加载。
+// 不能用原生 loading="lazy"：它的预加载距离由浏览器决定（快速网络下常达 1250px+），
+// 会导致滚一遍就把整页图片全部下完。这里自己控制 src，未进入视口前不发起任何请求。
+const THUMB_ROOT_MARGIN = '0px 0px 400px 0px';
+
 function Picture({ photo, mode, onLoad, onError, stagger = 0 }) {
   const isThumbnail = mode === 'thumbnail';
   const [usingOriginalFallback, setUsingOriginalFallback] = useState(false);
   // 图片加载完成后才播放入场动画（配合 styles.css 的 photo-media-in）
   const [isLoaded, setIsLoaded] = useState(false);
+  // 首屏的几张（priority）立即加载，其余等进入视口
+  const [inView, setInView] = useState(() => !isThumbnail || Boolean(photo.priority));
+  const frameRef = useRef(null);
   const thumbnailUrl = photo.thumbnail?.url;
   const originalUrl = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
   const url = isThumbnail && !usingOriginalFallback ? (thumbnailUrl || originalUrl) : originalUrl;
   useEffect(() => setUsingOriginalFallback(false), [photo.assetId, thumbnailUrl, mode]);
   // 图片源变化时重置，让回落原图或切换分类后能重新播放动画
   useEffect(() => setIsLoaded(false), [photo.assetId, url, mode]);
-  if (!url) return null;
+  // 切换分类后重置可见状态，重新按视口触发加载
+  useEffect(() => {
+    setInView(!isThumbnail || Boolean(photo.priority));
+  }, [photo.assetId, isThumbnail, photo.priority]);
+
+  // 观察自己是否接近视口；一旦接近就固定为 true，不再回退（避免来回滚动反复请求）
+  useEffect(() => {
+    if (!isThumbnail || inView) return undefined;
+    const node = frameRef.current;
+    if (!node) return undefined;
+    if (typeof IntersectionObserver === 'undefined') { setInView(true); return undefined; }
+    const observer = new IntersectionObserver((entries) => {
+      if (entries.some((entry) => entry.isIntersecting)) {
+        setInView(true);
+        observer.disconnect();
+      }
+    }, { rootMargin: THUMB_ROOT_MARGIN });
+    observer.observe(node);
+    return () => observer.disconnect();
+  }, [isThumbnail, inView, photo.assetId]);
 
   // 同一行的三张依次延迟 0 / 70 / 140ms，形成波浪感；封顶 3 避免长列表等待。
   // 只有网格缩略图播加入场动画，灯箱保持立即显示。
   const delayStep = Math.min(Math.max(stagger, 0), 3);
   const animate = isThumbnail;
+  // 未进入视口时不设置 src，浏览器不会发起任何下载
+  const activeUrl = inView ? url : undefined;
 
-  return <picture>
+  return <picture ref={frameRef}>
     <img
-      src={url}
+      src={activeUrl}
       alt={photo.alt || photo.title}
-      loading={mode === 'thumbnail' && photo.priority ? 'eager' : mode === 'thumbnail' ? 'lazy' : 'eager'}
-      fetchPriority={mode === 'thumbnail' && photo.priority ? 'high' : 'auto'}
+      // src 由 IntersectionObserver 控制，这里固定 eager 即可（不设 src 时不会下载）
+      loading="eager"
+      fetchPriority={isThumbnail && photo.priority ? 'high' : 'auto'}
       draggable="false"
       className={animate && isLoaded ? 'is-loaded' : undefined}
       data-stagger={animate && delayStep > 0 ? '1' : undefined}
