@@ -15,3 +15,6 @@ image-converter/.wrangler/
 
 # 一次性缩略图工具（临时脚本与产物，不进仓库）
 .photo-thumbs/
+
+# 机身/镜头旁挂清单（由 scripts/build-camera-sidecar.mjs 生成，上传到 R2）
+.photo-camera.json

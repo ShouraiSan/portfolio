@@ -45,7 +45,7 @@ test('catalog derives category, title, dimensions, and private asset id from R2 
 
 test('production catalog can skip EXIF parsing to stay within Worker CPU limits', async () => {
   clearPhotoCatalogCache();
-  let reads = 0;
+  const reads = [];
   const env = {
     PHOTO_SIGNING_SECRET: 'catalog-test-secret',
     photo: {
@@ -53,17 +53,102 @@ test('production catalog can skip EXIF parsing to stay within Worker CPU limits'
         objects: [{ key: '街头/new_upload.jpg', size: 100, etag: 'etag-002', uploaded: new Date('2026-09-20T00:00:00Z'), customMetadata: {} }],
         truncated: false,
       }),
-      get: async () => { reads += 1; return null; },
+      // 记录读到哪些对象
+      get: async (key) => { reads.push(key); return null; },
     },
   };
   const catalog = await loadPhotoCatalog(env, null);
-  assert.equal(reads, 0);
+
+  // 关键约束：**不得读取图片二进制**（那是 PHOTO_EXIF_SCAN 才做的事，会撞 CPU 上限）。
+  // 唯一允许的 get 是那一次旁挂清单探测；返回 null 时按「无旁挂数据」继续。
+  assert.deepEqual(reads, ['_camera.json']);
+
   assert.equal(catalog.photos[0].category, '街头');
   assert.equal(catalog.photos[0].title, 'new upload');
   assert.equal(catalog.photos[0].year, '2026');
+  // 没有旁挂数据时 camera 仍为空（与引入旁挂之前一致）
+  assert.equal(catalog.photos[0].camera, '');
 });
 
 test('EXIF years outside the plausible range fall back to the upload year', () => {
   assert.equal(yearFor(new Date('1899-12-31T00:00:00Z'), '2026'), '2026');
   assert.equal(yearFor(new Date('2025-03-01T00:00:00Z'), '2026'), '2025');
+});
+
+// ---- 机身/镜头/年份旁挂清单（_camera.json）--------------------------------
+//
+// 背景：清单构建不读图片二进制，所以 camera/lens/year 只能来自 R2 对象
+// customMetadata；而现有对象上没有这些字段，灯箱的「机身 / 镜头」一直不显示。
+// 旁挂清单补这个空缺，且**必须只补空缺、不覆盖对象自身 metadata**。
+
+function sidecarEnv(sidecarBody, customMetadata = {}) {
+  return {
+    PHOTO_SIGNING_SECRET: 'catalog-test-secret',
+    photo: {
+      list: async () => ({
+        objects: [{
+          key: '风光/Chenshan_Park-7889.jpg', size: 100, etag: 'etag-003',
+          uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata,
+        }],
+        truncated: false,
+      }),
+      get: async (key) => (key === '_camera.json'
+        ? { text: async () => JSON.stringify(sidecarBody) }
+        : null),
+    },
+  };
+}
+
+test('camera sidecar fills camera, lens and year when object metadata is absent', async () => {
+  clearPhotoCatalogCache();
+  const env = sidecarEnv({
+    photos: [{ key: '风光/Chenshan_Park-7889.jpg', camera: 'NIKON CORPORATION NIKON Z 8', lens: 'NIKKOR Z 24-70mm f/4 S', year: '2024' }],
+  });
+  const catalog = await loadPhotoCatalog(env, null);
+  assert.equal(catalog.photos[0].camera, 'NIKON CORPORATION NIKON Z 8');
+  assert.equal(catalog.photos[0].lens, 'NIKKOR Z 24-70mm f/4 S');
+  assert.equal(catalog.photos[0].year, '2024');
+});
+
+test('camera sidecar matches despite separator differences between key forms', async () => {
+  clearPhotoCatalogCache();
+  // 清单里用空格形态，对象键是下划线形态 —— 规范化后必须仍然命中。
+  // 这一点很重要：R2 与 COS 两侧的分隔符写法并不统一，匹配不能依赖字面相等。
+  const env = sidecarEnv({
+    photos: [{ key: '风光/Chenshan Park-7889.jpg', camera: 'NIKON Z 8', lens: 'NIKKOR Z 50mm f/1.8 S', year: '2025' }],
+  });
+  const catalog = await loadPhotoCatalog(env, null);
+  assert.equal(catalog.photos[0].camera, 'NIKON Z 8');
+  assert.equal(catalog.photos[0].lens, 'NIKKOR Z 50mm f/1.8 S');
+});
+
+test('object customMetadata wins over the camera sidecar', async () => {
+  clearPhotoCatalogCache();
+  // 对象上写好的 metadata 是权威来源；旁挂清单只是过渡手段，不得覆盖它。
+  const env = sidecarEnv(
+    { photos: [{ key: '风光/Chenshan_Park-7889.jpg', camera: 'FROM-SIDECAR', lens: 'SIDECAR-LENS', year: '1999' }] },
+    { camera: 'FROM-OBJECT', lens: 'OBJECT-LENS', year: '2020' },
+  );
+  const catalog = await loadPhotoCatalog(env, null);
+  assert.equal(catalog.photos[0].camera, 'FROM-OBJECT');
+  assert.equal(catalog.photos[0].lens, 'OBJECT-LENS');
+  assert.equal(catalog.photos[0].year, '2020');
+});
+
+test('a malformed or missing camera sidecar degrades silently', async () => {
+  clearPhotoCatalogCache();
+  const broken = {
+    PHOTO_SIGNING_SECRET: 'catalog-test-secret',
+    photo: {
+      list: async () => ({
+        objects: [{ key: '街头/x.jpg', size: 10, etag: 'e1', uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {} }],
+        truncated: false,
+      }),
+      get: async (key) => (key === '_camera.json' ? { text: async () => 'not json at all' } : null),
+    },
+  };
+  const catalog = await loadPhotoCatalog(broken, null);
+  // 解析失败不应影响清单本身，camera 退回空串
+  assert.equal(catalog.photos.length, 1);
+  assert.equal(catalog.photos[0].camera, '');
 });

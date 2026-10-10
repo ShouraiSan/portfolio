@@ -31,6 +31,68 @@ function categoryFor(objectKey) {
   return parts.length > 1 ? parts[0] : '未分类';
 }
 
+// ---- 机身/镜头/年份旁挂清单（_camera.json） --------------------------------
+//
+// 为什么需要旁挂而不是直接读 EXIF：清单构建刻意不读图片二进制（见下方 PHOTO_EXIF_SCAN
+// 的说明），因此 camera/lens/year 只能来自 R2 对象的 customMetadata。现有对象的
+// metadata 里没有这些字段，于是清单里 camera 恒为空串，灯箱的「机身 / 镜头」永不显示。
+// 放一个几 KB 的旁挂清单，比改写 58 个对象的 metadata（或重传 0.4 GB）代价小得多。
+//
+// listImages() 会排除以 `_` 开头的对象，所以这个保留对象不会混进照片列表。
+const SIDECAR_OBJECT_KEY = '_camera.json';
+const SIDECAR_TTL_MS = 5 * 60 * 1000;
+let cachedSidecar;
+
+// 与 make-photo-assets.cjs 的 norm() 保持同一套等价规则：
+// 小写、全角括号转半角、_ - 空格 视为等价、去前导下划线。
+// 这样无论 R2 对象键在分隔符上怎么写，都能与旁挂清单对上号。
+function normalizeForMatch(value) {
+  return String(value || '').toLowerCase()
+    .replace(/（/g, '(').replace(/）/g, ')')
+    .replace(/[_\-\s]+/g, ' ')
+    .replace(/^[\s_]+/, '')
+    .trim();
+}
+
+function sidecarLookupKey(objectKey) {
+  const key = String(objectKey || '').replace(/^\/+/, '');
+  const slash = key.lastIndexOf('/');
+  if (slash <= 0) return '';
+  const dir = key.slice(0, slash);
+  const filename = key.slice(slash + 1).replace(/\.[^.]+$/, '');
+  return `${dir}/${normalizeForMatch(filename)}`;
+}
+
+async function loadCameraSidecar(env) {
+  if (cachedSidecar && cachedSidecar.expiresAt > Date.now()) return cachedSidecar.value;
+  if (!env.photo?.get) return null;
+  try {
+    const object = await env.photo.get(SIDECAR_OBJECT_KEY);
+    if (!object) {
+      cachedSidecar = { expiresAt: Date.now() + SIDECAR_TTL_MS, value: null };
+      return null;
+    }
+    const parsed = JSON.parse(await object.text());
+    const lookup = new Map();
+    for (const entry of parsed?.photos || []) {
+      if (!entry?.key) continue;
+      const normalized = sidecarLookupKey(entry.key);
+      if (normalized) lookup.set(normalized, entry);
+    }
+    const value = lookup.size ? lookup : null;
+    cachedSidecar = { expiresAt: Date.now() + SIDECAR_TTL_MS, value };
+    return value;
+  } catch {
+    // 清单缺失或格式错误时静默降级 —— 没有旁挂数据时行为与以前完全一致
+    cachedSidecar = { expiresAt: Date.now() + SIDECAR_TTL_MS, value: null };
+    return null;
+  }
+}
+
+export function clearCameraSidecarCache() {
+  cachedSidecar = undefined;
+}
+
 export function yearFor(value, fallback = '', minimum = 1990) {
   const year = value instanceof Date && !Number.isNaN(value.valueOf())
     ? value.getFullYear()
@@ -77,7 +139,7 @@ function cameraFor(exif, custom) {
   return `${make} ${model}`;
 }
 
-async function readImageMetadata(env, object) {
+async function readImageMetadata(env, object, sidecarEntry) {
   const custom = object.customMetadata || {};
   const allowExifScan = env.PHOTO_EXIF_SCAN === 'true';
   const needsBinary = allowExifScan && !(custom.width && custom.height && custom.year && custom.camera && custom.lens && custom.title);
@@ -98,11 +160,27 @@ async function readImageMetadata(env, object) {
   const takenAt = exif.DateTimeOriginal || exif.CreateDate || exif.ModifyDate;
   const modifiedYear = object.uploaded instanceof Date ? String(object.uploaded.getFullYear()) : '';
 
+  // 旁挂清单只补空缺，绝不覆盖对象自身 customMetadata 或 EXIF 提供的值。
+  // R2 对象上写好的 metadata 永远是权威来源，旁挂清单是过渡手段。
+  const sidecarCamera = cleanText(sidecarEntry?.camera);
+  const sidecarLens = cleanText(sidecarEntry?.lens);
+  const sidecarYear = cleanText(sidecarEntry?.year);
+
+  const camera = cameraFor(exif, custom) || sidecarCamera;
+  const lens = cleanText(custom.lens || exif.LensModel || exif.Lens) || sidecarLens;
+  // 年份优先序：对象 custom.year → 旁挂清单 → EXIF 拍摄时间 → 上传年份。
+  // 注意旁挂这一步不能让 yearFor() 提前回落到上传年份，否则旁挂值永远轮不到
+  // （实测踩过：yearFor(sidecarYear, modifiedYear) 直接返回了上传年份）。
+  const uploadedYear = modifiedYear || '';
+  let year = custom.year ? yearFor(custom.year, uploadedYear, 1900) : '';
+  if (!year && sidecarYear) year = yearFor(sidecarYear, '', 1900);
+  if (!year) year = yearFor(takenAt, uploadedYear);
+
   return {
     title: cleanText(custom.title || exif.Title || exif.XPTitle || exif.ImageDescription) || filenameTitle(object.key),
-    year: custom.year ? yearFor(custom.year, modifiedYear, 1900) : yearFor(takenAt, modifiedYear),
-    camera: cameraFor(exif, custom),
-    lens: cleanText(custom.lens || exif.LensModel || exif.Lens),
+    year,
+    camera,
+    lens,
     description: cleanText(custom.description || exif.Description || exif.ImageDescription),
     width,
     height,
@@ -128,8 +206,10 @@ export async function loadPhotoCatalog(env, fallbackCatalog) {
   const objects = await listImages(env.photo);
   if (objects.length === 0) return fallbackCatalog;
   const idSecret = env.PHOTO_ASSET_ID_SECRET || env.PHOTO_SIGNING_SECRET;
+  // 旁挂清单读不到时返回 null，此时行为与引入它之前完全一致
+  const sidecar = await loadCameraSidecar(env);
   const photos = await Promise.all(objects.map(async (object) => {
-    const metadata = await readImageMetadata(env, object);
+    const metadata = await readImageMetadata(env, object, sidecar?.get(sidecarLookupKey(object.key)));
     return {
       assetId: await assetIdFor(object.key, idSecret),
       objectKey: object.key,
@@ -148,4 +228,5 @@ export async function loadPhotoCatalog(env, fallbackCatalog) {
 
 export function clearPhotoCatalogCache() {
   cachedCatalog = undefined;
+  cachedSidecar = undefined;
 }
