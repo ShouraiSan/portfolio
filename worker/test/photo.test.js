@@ -5,7 +5,7 @@ import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
 const opaqueRef = 'abcdefghijklmnopqrstuvwxyz0123456789_-';
-const allowed = 'https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173';
+const allowed = 'https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,https://kensym15.top,http://127.0.0.1:5173';
 const env = { ALLOWED_ORIGINS: allowed, PHOTO_SIGNING_SECRET: secret, photo: { get: async () => null } };
 const trustedHeaders = { Referer: 'http://127.0.0.1:5173/photography.html', Origin: 'http://127.0.0.1:5173' };
 
@@ -77,41 +77,45 @@ test('signed image route returns the R2 JPG bytes without Images transformation'
   clearPhotoCatalogCache();
 });
 
-test('manifest exposes a signed COS thumbnail while retaining the signed R2 original', async () => {
+const originalObject = {
+  key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
+  uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
+};
+const cosThumbObject = {
+  key: 'thumbs/风光/original.avif', size: 3, httpEtag: '"etag-cos"', body: new Uint8Array([5, 6, 7]),
+};
+
+// R2 侧同时提供原图与 thumbs/ 下的缩略图
+function thumbBucket() {
+  return {
+    list: async () => ({ objects: [originalObject], truncated: false }),
+    get: async (key) => key === originalObject.key ? originalObject
+      : key === cosThumbObject.key ? cosThumbObject : null,
+  };
+}
+
+test('China node (kensym15.top) loads grid thumbnails from Shanghai COS', async () => {
   clearPhotoCatalogCache();
-  const original = {
-    key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
-    uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
-  };
-  const bucket = {
-    list: async () => ({ objects: [original], truncated: false }),
-    get: async (key) => key === original.key ? original : null,
-  };
-  // 缩略图改为从上海 COS 读取，这里拦截全局 fetch 模拟 COS 响应
-  const thumbBytes = new Uint8Array([5, 6, 7]);
   const requested = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
     const href = typeof input === 'string' ? input : input.url;
     requested.push(href);
-    return new Response(thumbBytes, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+    return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
   };
   try {
-    const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
-    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
-    const manifest = await manifestResponse.json();
-    const photo = manifest.photos[0];
-    // 缩略图走 thumb 变体，并指向本站签名地址（不是裸 COS 地址）
+    const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
+    const headers = { Referer: 'https://kensym15.top/photography.html', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
     assert.match(photo.thumbnail.url, /variant=thumb/);
-    assert.match(photo.thumbnail.url, /^https:\/\/kensym15\.dpdns\.org\/photo\/image\//);
-    // 灯箱原图不带 variant，仍指向 R2
     assert.equal(new URL(photo.original.url).searchParams.has('variant'), false);
 
-    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers: trustedHeaders }), directEnv);
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
     assert.equal(imageResponse.status, 200);
     assert.equal(imageResponse.headers.get('content-type'), 'image/avif');
-    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), thumbBytes);
-    // 确认确实去 COS 取图，且路径带有 thumbs/ 前缀与分类目录
+    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), cosThumbObject.body);
+    // 国内来源必须走 COS；R2 上有同名缩略图也不应被使用
     assert.equal(requested.length > 0, true);
     assert.match(requested[0], /^https:\/\/cos\.example\.com\/thumbs\//);
   } finally {
@@ -120,21 +124,56 @@ test('manifest exposes a signed COS thumbnail while retaining the signed R2 orig
   }
 });
 
-test('COS thumbnail requests still require a valid signature', async () => {
+test('overseas node (GitHub Pages) loads grid thumbnails from R2', async () => {
   clearPhotoCatalogCache();
-  const original = {
-    key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
-    uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    requested.push(typeof input === 'string' ? input : input.url);
+    return new Response(null, { status: 500 });
   };
-  const bucket = {
-    list: async () => ({ objects: [original], truncated: false }),
-    get: async (key) => key === original.key ? original : null,
-  };
-  const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
+  try {
+    const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
+    const headers = { Referer: 'https://shouraisan.github.io/portfolio/photography.html', Origin: 'https://shouraisan.github.io' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(imageResponse.status, 200);
+    assert.equal(imageResponse.headers.get('content-type'), 'image/avif');
+    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), cosThumbObject.body);
+    // 国外来源应直接读 R2，完全不访问 COS
+    assert.equal(requested.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('thumbnail falls back to R2 when the COS copy is unavailable', async () => {
+  clearPhotoCatalogCache();
+  const originalFetch = globalThis.fetch;
+  // 模拟 COS 不可用
+  globalThis.fetch = async () => { throw new Error('cos down'); };
+  try {
+    const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
+    const headers = { Referer: 'https://kensym15.top/photography.html', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(imageResponse.status, 200);
+    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), cosThumbObject.body);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('thumbnail requests still require a valid signature', async () => {
+  clearPhotoCatalogCache();
+  const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
   const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
-  const manifest = await manifestResponse.json();
-  const thumbUrl = new URL(manifest.photos[0].thumbnail.url);
-  // 篡改签名后必须被拒绝，不能因为图在 COS 上就放行
+  const thumbUrl = new URL((await manifestResponse.json()).photos[0].thumbnail.url);
   thumbUrl.searchParams.set('sig', `${thumbUrl.searchParams.get('sig')}x`);
   const denied = await worker.fetch(new Request(thumbUrl.toString(), { headers: trustedHeaders }), directEnv);
   assert.equal(denied.status, 403);
