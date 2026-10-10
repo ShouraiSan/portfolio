@@ -84,9 +84,14 @@ const originalObject = {
 const cosThumbObject = {
   key: 'thumbs/风光/original.avif', size: 3, httpEtag: '"etag-cos"', body: new Uint8Array([5, 6, 7]),
 };
-// 预览图在 COS 侧是「平铺」结构：previews/<文件名>.avif，没有分类目录
+// 预览图在 COS 侧同样按「分类目录」组织：previews/<分类>/<文件名>.avif
+// （Worker 仍会兜底尝试平铺形式 previews/<文件名>.avif，兼容早期上传）
 const cosPreviewObject = {
-  key: 'previews/original.avif', size: 6, httpEtag: '"etag-preview"', body: new Uint8Array([8, 9, 10, 11]),
+  key: 'previews/风光/original.avif', size: 6, httpEtag: '"etag-preview"', body: new Uint8Array([8, 9, 10, 11]),
+};
+// R2 侧的预览图与缩略图是不同对象，用于区分「到底读的哪一份」
+const r2PreviewObject = {
+  key: 'previews/风光/original.avif', size: 5, httpEtag: '"etag-r2-preview"', body: new Uint8Array([21, 22, 23, 24, 25]),
 };
 
 // R2 侧同时提供原图、thumbs/ 缩略图、previews/ 预览图
@@ -95,7 +100,7 @@ function thumbBucket() {
     list: async () => ({ objects: [originalObject], truncated: false }),
     get: async (key) => key === originalObject.key ? originalObject
       : key === cosThumbObject.key ? cosThumbObject
-        : key === cosPreviewObject.key ? cosPreviewObject : null,
+        : key === cosPreviewObject.key ? r2PreviewObject : null,
   };
 }
 
@@ -217,9 +222,45 @@ test('thumbnail falls back to R2 when the COS copy is unavailable', async () => 
     const headers = { Referer: 'https://kensym15.top/photography.html', Origin: 'https://kensym15.top' };
     const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
     const photo = (await manifestResponse.json()).photos[0];
-    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
-    assert.equal(imageResponse.status, 200);
-    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), cosThumbObject.body);
+    // 国内来源：缩略图与预览图都应从上海 COS 回落到 R2 上对应的那一份
+    const thumbnail = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(thumbnail.status, 200);
+    assert.deepEqual(new Uint8Array(await thumbnail.arrayBuffer()), cosThumbObject.body);
+    const preview = await worker.fetch(new Request(photo.preview.url, { headers }), directEnv);
+    assert.equal(preview.status, 200);
+    assert.deepEqual(new Uint8Array(await preview.arrayBuffer()), r2PreviewObject.body);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('overseas node never falls back to Shanghai COS when R2 misses', async () => {
+  clearPhotoCatalogCache();
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  // COS 侧"有图"（任何命中都会返回 200），用来证明国外节点根本不去问它
+  globalThis.fetch = async (input) => {
+    requested.push(typeof input === 'string' ? input : input.url);
+    return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    // 空的 R2：原图仍可被 list 出来（否则没有清单），但取图时一律落空
+    const emptyBucket = {
+      list: async () => ({ objects: [originalObject], truncated: false }),
+      get: async (key) => key === originalObject.key ? originalObject : null,
+    };
+    const directEnv = { ...env, photo: emptyBucket, COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
+    const headers = { Referer: 'https://shouraisan.github.io/portfolio/photography.html', Origin: 'https://shouraisan.github.io' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+
+    const thumbnail = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(thumbnail.status, 404);
+    const preview = await worker.fetch(new Request(photo.preview.url, { headers }), directEnv);
+    assert.equal(preview.status, 404);
+    // R2 是唯一主节点：国外来源即使 R2 取不到，也不得回落到上海 COS
+    assert.equal(requested.length, 0);
   } finally {
     globalThis.fetch = originalFetch;
     clearPhotoCatalogCache();

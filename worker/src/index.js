@@ -248,13 +248,12 @@ export function isChinaNodeRequest(request) {
     || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
 }
 
-// 按来源选源（国内 -> 上海 COS，国外 -> R2），任一侧失败自动回落到另一侧。
+// 按来源选源。R2 是唯一主节点：国外（及一切未识别的来源）只读 R2，绝不触碰上海 COS。
+// 只有国内入口 kensym15.top（及本地开发）才把上海 COS 当作首选源，且失败时回落到 R2。
 // photo.variant 决定取缩略图（thumbs/）还是预览图（previews/）。
 export async function fetchThumb(request, env, photo) {
-  const prefersCos = isChinaNodeRequest(request);
-  const primary = prefersCos ? fetchCosImage : fetchR2Image;
-  const fallback = prefersCos ? fetchR2Image : fetchCosImage;
-  return (await primary(env, photo)) || (await fallback(env, photo));
+  if (!isChinaNodeRequest(request)) return fetchR2Image(env, photo);
+  return (await fetchCosImage(env, photo)) || (await fetchR2Image(env, photo));
 }
 
 export async function createPhotoSignature(assetId, variant, secret) {
