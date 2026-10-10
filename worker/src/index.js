@@ -155,10 +155,15 @@ function thumbCandidates(objectKey) {
   const filename = String(objectKey || '').split('/').at(-1).replace(/\.[^.]+$/, '');
   let decoded = filename;
   try { decoded = decodeURIComponent(filename); } catch { /* 保留原样 */ }
+  // 四组基名：原名、连字符→下划线、下划线→连字符、空格→下划线。
+  // 最后一组是必需的：COS 侧的资源存在「空格转下划线但保留原有连字符」的混合命名，
+  // 例如 R2 的 "Chenshan Park-7889" 对应 COS 的 "Chenshan_Park-7889"，
+  // 只做前三种替换会漏掉这一形态，导致图片 404。
   const bases = [
     decoded,
     decoded.replace(/-/g, '_'),
     decoded.replace(/_/g, '-'),
+    decoded.replace(/ /g, '_'),
   ];
   const candidates = [];
   for (const base of bases) {

@@ -168,12 +168,14 @@ jobs:
 
           html_ok=1
           html_failed=""
-          for page in index.html capabilities.html photography.html; do
+          # 页面已改为「目录 + index.html」形式，线上地址无 .html 后缀。
+          # 这里必须跟着改，否则每次部署都会误报「页面不可达」。
+          for page in "" "photography/" "capabilities/"; do
             code=$(curl -s -o /dev/null -w '%{http_code}' --max-time 20 "${site}/${page}" || echo "000")
-            echo "  ${page} -> HTTP ${code}"
+            echo "  /${page} -> HTTP ${code}"
             if [ "$code" != "200" ]; then
               html_ok=0
-              html_failed="${html_failed} ${page}(${code})"
+              html_failed="${html_failed} /${page}(${code})"
             fi
           done
 
