@@ -23,7 +23,7 @@
 | 内容来源 | 全部**硬编码在源码里**（视频清单）或**由 R2 自动扫描**（照片清单），改内容 = 改代码 / 传 R2 |
 | 域名 | 站点 `kensym15.top`（国内）；Worker `kensym15.dpdns.org`（dpdns 子域，**只有子域在 Worker 上**） |
 | 最大风险 | 改了 `ALLOWED_ORIGINS` 或图片命名规则 → 全线 403/404（详见 §9、§10） |
-| 最大遗留改进项 | 站点有 **6 处第三方热链图**（unsplash / picui）+ **字体走 Google Fonts**，国内节点两者都不可达（详见 §6.3、§9.3、§11 第 9–10 条） |
+| 最大遗留改进项 | 站点还有 **6 处第三方热链图**（unsplash / picui），国内节点不可达（详见 §9.3、§11 第 9 条）。字体问题已解决（自托管，见 §6.3） |
 | 本地开发命令 | `pnpm dev`（前端）+ `pnpm worker:dev:remote`（Worker，**必须带 `--remote`**） |
 | 文档状态 | 本手册在 **2026-10 一轮大改造后重新核对**（COS 私有化+签名、camera 旁挂清单、wrangler 升级、多轮实测更正）。文中带 ⚠️/✅ 的「更正」「已知并接受」段落是**刻意保留的**，不要当成待修缺陷 |
 
@@ -76,6 +76,9 @@ E:\codex\个人网站\
 │   ├── photography.jsx           摄影页 React 应用：分类筛选 + 网格 + 全屏灯箱（缩放/手势/键盘）
 │   └── styles.css                全站唯一样式表（40+ 行，压缩书写，含全部三页样式）
 ├── public/favicon.svg            图标（构建时复制到 dist 根）
+├── src/fonts/                    ★ 自托管字体（Manrope / DM Sans 可变字体，共 60 KB），见 §6.3
+│   ├── manrope.woff2             可变字重 300–600，latin 子集
+│   └── dm-sans.woff2             可变字重 400–600，latin 子集
 ├── vite.config.js                多页构建配置 + 本地 Worker 适配器 + 去 crossorigin 插件
 ├── package.json                  脚本与依赖（含 worker:deploy / test）
 ├── pnpm-workspace.yaml           仅 allowBuilds（esbuild / workerd 允许执行构建脚本）
@@ -623,25 +626,35 @@ COS_SECRET_KEY=...
 
 派生用色：Hero 遮罩 `#050505` 系渐变；作品卡底 `#141414`；视频弹窗底 `#0d0d0d`；摄影页前身底 `#090909`、现为 `#000`。
 
-### 6.3 字体
+### 6.3 字体（已自托管）
 
-| 用途 | 字体 |
-| --- | --- |
-| 正文 / 大标题 | `Manrope`（大标题 `font-weight: 300`） |
-| Logo / 数字 / 小标签 | `DM Sans` |
-| 中文回退 | `"Microsoft YaHei", sans-serif` |
+| 用途 | 字体 | CSS 变量 |
+| --- | --- | --- |
+| 正文 / 大标题 | `Manrope`（可变字重 300–600） | `--font-display` |
+| Logo / 数字 / 小标签 | `DM Sans`（可变字重 400–600） | `--font-label` |
+| 中文回退 | `"Microsoft YaHei", sans-serif` | 两个变量里都带 |
 
-`body` 定义：`font-family: Manrope, "Microsoft YaHei", sans-serif`。
+**字体文件在自己手上，不再依赖 Google**：
 
-字体通过 `styles.css` **第 1 行**引入：
-
-```css
-@import url('https://fonts.googleapis.com/css2?family=DM+Sans:wght@400;500;600&family=Manrope:wght@300;400;500;600&display=swap');
+```
+src/fonts/manrope.woff2     24,836 bytes   可变字体，覆盖 300–600
+src/fonts/dm-sans.woff2     36,932 bytes   可变字体，覆盖 400–600
 ```
 
-**这是国内节点的真实风格风险**：`fonts.googleapis.com` / `fonts.gstatic.com` 在中国大陆基本不可达。国内访客走香港 COS 打开站点时，字体请求会超时 → Manrope 与 DM Sans **全部回落到 Microsoft YaHei**，大标题的字重与字面宽度随之变化，视觉与设计稿不一致。同时 `@import` 位于 CSS 首行是**渲染阻塞**的，还会拖慢首屏。
+两条 `@font-face` 写在 `src/styles.css` 顶部（取代了原先指向 Google Fonts 的 `@import`），要点：
 
-**建议方向**（见 §11 第 10 项）：把 Manrope / DM Sans 的 woff2 子集自托管到 COS 与 R2，改用 `@font-face` + `font-display: swap`，两个节点各自就近取字体。
+- **两个文件都是可变字体**，一个文件覆盖全部用到的字重，因此只需两条 `@font-face`，用 `font-weight:300 600` 这样的**区间**声明。按静态字重拆分会下载 7 个文件、共 205 KB —— 实际只需 2 个、60 KB。
+- `unicode-range` 限定为 **latin 子集**：这两个字体本来就不含中文字形，加上这个声明后浏览器知道中文不必去下载它，直接走 `Microsoft YaHei`。
+- 字体放在 `src/fonts/`（不是 `public/`），让 **Vite 参与处理**：构建时自动加内容 hash 并重写成同目录相对路径 `./manrope-DHIcAJRg.woff2`。这样在域根（香港 COS）与 `/portfolio/`（GitHub Pages）两种基准下都能正确解析，而且因为落在 `dist/assets/` 里，**自动获得一年强缓存头**。
+
+> ⚠️ **踩过的坑：不要用 `public/fonts/` + 绝对路径 `/fonts/…`**。
+> 站点是双节点的，GitHub Pages 上站点在 `/portfolio/` 子路径下 —— 绝对路径 `/fonts/…` 会指向域根而 404。
+> 也别依赖 CSS 自身的相对路径：CSS 在 `/assets/` 里，写 `fonts/x.woff2` 会解析成 `/assets/fonts/x.woff2`（不存在）。
+> 交给 Vite 处理是唯一在两种基准下都稳的做法。
+
+**字体栈必须带中文回退**：全站有 25 处 `font:` 简写（如 `font:600 26px DM Sans`）。这些简写**原来只写了单一字体名**，字体取不到时浏览器会落到**默认字体（Windows 上多为 Times New Roman 衬线体）**，而不是 YaHei —— 巨型标题与 Logo 会变成衬线体。现已全部改为 `var(--font-display)` / `var(--font-label)`，两个变量都带 `"Microsoft YaHei", sans-serif` 回退。
+
+> 历史背景：这段经历值得记住。原先靠 `@import` 引 Google Fonts，而 `fonts.googleapis.com` 在中国大陆不可达，且 `@import` 位于 CSS 首行是**渲染阻塞**的 —— 国内访客会先看到一段无样式的裸 HTML，数秒后才回退重排。自托管后这些问题都不存在了。
 
 ### 6.4 布局与响应式
 
@@ -831,7 +844,7 @@ pnpm worker:deploy
 | --- | --- | --- |
 | C1 | **外包图片 + 热链（共 6 处）** | `src/main.jsx` 里 4 张作品封面是 `images.unsplash.com` 硬编码；关于页头像是 `free.picui.cn`；`styles.css` 第 24 行的 `.hero-poster` 首屏大图**也是** unsplash（`photo-1485846234645-…`）。第三方图挂了或国内访问慢，首屏与作品区就破相，且非自有资源 |
 | C2 | `styles.css` 覆盖式重复 | 同选择器反复重定义 + 40+ 行单行压缩规则，靠顺序生效。**新样式必须追加到末尾** |
-| C3 | 字体依赖 Google Fonts | `styles.css` 第 1 行 `@import` 引入 Manrope / DM Sans，国内不可达 → 全部回落 Microsoft YaHei 且阻塞渲染（见 §6.3） |
+| C3 | ~~字体依赖 Google Fonts~~ | ~~`styles.css` 第 1 行 `@import` 引入 Manrope / DM Sans，国内不可达 → 全部回落 Microsoft YaHei 且阻塞渲染~~ **已修复：改为自托管，见 §6.3。顺带修掉了 25 处 `font:` 简写缺少回退的问题** |
 | C4 | Hero 背景是**热链图片**而非视频 | `index.html` 里没有 `<video>` 元素，`.hero-poster` 用 unsplash 静态图 + 渐变遮罩。CSS 里同时存在 `.hero video` 规则（无对应元素）。视觉强度低于 `doc/program.md` 描述的「电影感静态大图」自有素材方案 |
 | C5 | 编码正确性靠人工 | `main.jsx` 的 `mediaPath` 是手写百分号编码，改错即 404 |
 
@@ -857,7 +870,7 @@ pnpm worker:deploy
 | --- | --- | --- |
 | E1 | **`wrangler dev` 完全无法启动**（主 Worker 与任意探针 Worker 都一样） | workerd 报 `CreateDirectory: #5 拒绝访问, path = miniflare-email-store`。该路径是**裸相对名**，而 wrangler 传的是绝对 persist 目录 —— workerd 拼接 email-store 子目录时丢掉了父路径，Windows 下被解析到**盘符根**。`miniflare-email-store` 是**较新版本才引入的 store**（旧的 `.wrangler/state/v3/` 里只有 cache/d1/images/kv/r2/ratelimit），属版本兼容 bug。<br>**修复**：wrangler `4.135.0` → `4.149.0`（workerd `1.20260918.1` → `1.20261006.1`）。若将来回归，先想到这一条。 |
 | E2 | 本地 `/photo/manifest` 返回 **500** | **不是代码问题**：默认 `wrangler dev` 用本地模拟的空 R2，其 `list` 在本机失败（`Error: list: Unspecified error (0)` / 日志 `R2 error response does not contain the CF-R2-Error header`）。<br>**用法**：本地开发用 `pnpm worker:dev:remote`（连真实 R2）。 |
-| E3 | `push-to-cos.ps1` 的上传永远写不进缓存头 | 该脚本用 `coscmd upload -rs`，其中 **`-s`（sync）会按「同名同内容」跳过文件，连 `Cache-Control` 元数据都不更新**。CI（`deploy-cos.yml`）正因这个坑专门去掉了 `-s`，并有一段注释记录此事 —— 但**这个手动兜底脚本没同步修**。<br>**状态**：未修（属脚本改动，需使用者确认）。用它发布过的 `assets/` 可能**没有**长期强缓存头。 |
+| E3 | `push-to-cos.ps1` 的上传永远写不进缓存头 | 该脚本用 `coscmd upload -rs`，其中 **`-s`（sync）会按「同名同内容」跳过文件，连 `Cache-Control` 元数据都不更新**。CI（`deploy-cos.yml`）正因这个坑专门去掉了 `-s`，并有一段注释记录此事 —— 但**这个手动兜底脚本没同步修**。<br>**已修复**：三处上传改为 `-r`，并加注释说明为何绝不能加 `-s`；`--delete` 那处保留 `-rs`（删除比较确实需要 sync）。 |
 | E4 | 测试里出现过伪密钥被 GitHub 拒绝推送 | 测试数据里写了形如真实腾讯云 SecretId 的字符串（`AKID…`），**GitHub 推送保护**判定为密钥并拒绝整个 push。<br>**规则**：测试/示例里**永远不要**用 `AKID` 开头的假值，用 `test-secret-id-…` 这类明显非密钥的字符串。 |
 
 ---
@@ -918,7 +931,7 @@ pnpm worker:deploy
 
 8. **`src/styles.css` 去重**（C2）：把末尾 40+ 行重复/覆盖规则合并回各自区块，统一到一个可维护结构。**风险中等**（覆盖顺序敏感），需要逐页视觉回归。
 9. **外包图片落地**（C1，共 6 处）：首屏 `.hero-poster`、4 张作品封面（unsplash）、关于页头像（picui）全部迁到自有存储。建议复用 R2 `photo` 桶 + 现有签名链路，或最小改动放 COS。
-10. **字体自托管**（C3）：下载 Manrope / DM Sans woff2 子集，放 COS（国内）与 R2（国外），改 `@font-face` + `font-display: swap`，去掉第 1 行的 Google Fonts `@import`。**这是国内节点视觉一致性的关键修复。**
+10. ✅ **字体自托管**（C3）—— **已完成**。两个可变字体（Manrope / DM Sans，共 60 KB）放进 `src/fonts/`，交给 Vite 加 hash 并重写路径；22 行 `@font-face` 取代了首行的 Google `@import`；顺带修掉了 **25 处 `font:` 简写缺少回退**导致的「国内标题变衬线体」。详见 §6.3。
 11. **补测试**（D10）：为 `/media/*` 视频代理（Range 请求、白名单拒绝）与页面回源逻辑添加 `node:test` 用例。
 12. **页面自检清单外部化**（D8）：让 `deploy-cos.yml` 从 `dist/` 实际产出推导待探测路径，替代硬编码列表。
 
@@ -935,6 +948,9 @@ pnpm worker:deploy
     - **签名模型现已闭环**：R2 与上海桶同时受保护，§5.2 宣称的三层保证全部成立。
 15. ✅ **机身/镜头/年份填充（方案 E：旁挂清单）** —— **已实现并上线**。58/58 有 camera、56/58 有 lens，详见 §5.8。
 16. ✅ **`wrangler dev` 修复** —— 升级 wrangler 至 4.149.0，详见 §9.5 E1。
+17. ✅ **`push-to-cos.ps1` 的 `-rs` 缺陷**（原 §9.5 E3）—— 三处上传去掉 `-s`，与 CI 行为对齐；`--delete` 那处保留 `-s`（删除比较确实需要它）。
+18. ✅ **删除 `spaceVariant`** —— 经带签名 HEAD 逐条核实，COS 的 thumbs/previews 对象名与 R2 `objectKey` 一致，该变体是多余的。`thumbCandidates` 由 15 组降到 12 组、`originalKeysFor` 由 3 降到 2，线上 58 张（含 6 张空格/混合命名）全部正常。
+19. ✅ **字体自托管 + 回退修复**（原第 10 条）—— 见 §6.3。
 
 **第五批 · 待决策**
 
