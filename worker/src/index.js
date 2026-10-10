@@ -144,26 +144,38 @@ export function normalizePhotoRequest(searchParams) {
   return value;
 }
 
+// 「空格→下划线」真正会产生的下划线：位于全角/半角括号或数字之前，或紧跟空格/括号/数字。
+// 必须定向还原而不是无差别替换，否则 "hobby_figure" 这类**固有下划线**会被破坏成
+// "hobby figure"，永远命中不了（实测 58 张里有 26 张属于这种混合命名）。
+const SEPARATOR_UNDERSCORE = /(?<=[\s（(0-9])_|_(?=[\s）)0-9（(])/g;
+
+function spaceVariant(name) {
+  return String(name || '').replace(SEPARATOR_UNDERSCORE, ' ');
+}
+
 // 摄影页网格缩略图的对象键。
 // 必须用 R2 对象键（objectKey）而不是 title：title 由 filenameTitle() 生成，
 // 其中 /[_-]+/g 会被替换成空格，连字符与下划线信息已丢失
 // （例如 "bocchi (5 - 12)" 会变成 "bocchi (5   12)"），无法还原真实文件名。
-// R2 与 COS 的文件名只有分隔符与前导下划线这两处差异，因此按变体逐个尝试。
+// R2 与 COS 的文件名只有分隔符与前导下划线这几处差异，因此按变体逐个尝试。
 const COS_CATEGORIES = ['人像', '手办', '街头', '风光'];
 
-function thumbCandidates(objectKey) {
+export function thumbCandidates(objectKey) {
   const filename = String(objectKey || '').split('/').at(-1).replace(/\.[^.]+$/, '');
   let decoded = filename;
   try { decoded = decodeURIComponent(filename); } catch { /* 保留原样 */ }
-  // 四组基名：原名、连字符→下划线、下划线→连字符、空格→下划线。
-  // 最后一组是必需的：COS 侧的资源存在「空格转下划线但保留原有连字符」的混合命名，
-  // 例如 R2 的 "Chenshan Park-7889" 对应 COS 的 "Chenshan_Park-7889"，
-  // 只做前三种替换会漏掉这一形态，导致图片 404。
+  // 五组基名：原名、连字符→下划线、下划线→连字符、空格→下划线，
+  // 以及「分隔符下划线→空格」（见 spaceVariant 的说明）。
+  // 最后一组是必需的：COS 侧实测 58 张里有 27 张的对象名**保留半角空格**
+  // （例如 "bocchi (5 - 12).avif"、"hobby_figure（nomark (1 - 26).avif"），
+  // 而 R2 的 objectKey 用下划线形态。缺这一组时这些图的缩略图/预览图全部取不到，
+  // 前端 Picture 的 onError 会回落到加载整张原图（体积差数十倍）。
   const bases = [
     decoded,
     decoded.replace(/-/g, '_'),
     decoded.replace(/_/g, '-'),
     decoded.replace(/ /g, '_'),
+    spaceVariant(decoded),
   ];
   const candidates = [];
   for (const base of bases) {
@@ -185,7 +197,7 @@ function encodePath(key) {
 // 两者都按「分类目录」组织：<prefix>/<分类>/<文件名>.avif
 // 预览图额外兼容平铺形式 <prefix>/<文件名>.avif（早期上传没有分类层时的结构）。
 // R2 与 COS 的文件名只有分隔符与前导下划线这几处差异，因此按变体逐个尝试。
-function imageKeysFor(photo) {
+export function imageKeysFor(photo) {
   const variant = photo.variant === 'preview' ? 'preview' : 'thumb';
   const defaultPrefix = variant === 'preview' ? 'previews' : 'thumbs';
   const prefix = String(photo.prefix || defaultPrefix).replace(/^\/+|\/+$/g, '');
@@ -204,6 +216,50 @@ function imageKeysFor(photo) {
     for (const name of names) keys.push(`${prefix}/${name}.avif`);
   }
   return keys;
+}
+
+// 原图（JPG）在 COS 侧的候选对象键。
+// COS 侧原图直接放在一级分类目录下：<分类>/<文件名>，没有额外的前缀层。
+// 命名差异与 thumbs/previews 相同：R2 用下划线，COS 保留半角空格
+// （58 张里 27 张含空格），且**扩展名大小写逐个文件继承原始命名**
+// （实测同桶内既有 `_DSC6557.JPG` 也有 `Chenshan_Park-7889.jpg`），因此不做扩展名归一化。
+export function originalKeysFor(objectKey) {
+  const key = String(objectKey || '').replace(/^\/+/, '');
+  const slash = key.lastIndexOf('/');
+  if (slash <= 0) return key ? [key] : [];
+  const dir = key.slice(0, slash);
+  const filename = key.slice(slash + 1);
+  if (!filename) return [];
+  const dot = filename.lastIndexOf('.');
+  const base = dot > 0 ? filename.slice(0, dot) : filename;
+  const extension = dot > 0 ? filename.slice(dot) : '';
+  const variants = [
+    base,
+    spaceVariant(base),   // R2 的下划线形态 -> COS 的保留空格形态
+    base.replace(/ /g, '_'),   // 反向兜底
+  ];
+  return [...new Set(variants.filter(Boolean).map((name) => `${dir}/${name}${extension}`))];
+}
+
+// 从上海 COS 读取原图 JPG（仅国内节点使用；R2 出口免费，国外节点不应跨境读 COS）
+async function fetchCosOriginal(env, objectKey) {
+  const host = String(env.COS_THUMB_HOST || '').replace(/\/+$/, '');
+  if (!host) return null;
+  for (const key of originalKeysFor(objectKey)) {
+    try {
+      const response = await fetch(`${host}/${encodePath(key)}`, {
+        method: 'GET',
+        signal: AbortSignal.timeout(30_000),
+      });
+      if (response.ok && response.body) {
+        const length = response.headers.get('Content-Length');
+        return { body: response.body, size: length ? Number(length) : undefined, key };
+      }
+    } catch {
+      // 网络异常时继续尝试下一个候选
+    }
+  }
+  return null;
 }
 
 // 从 R2 读取图片资源（国外节点走这里：Global CDN 到 R2 更快）
@@ -382,6 +438,24 @@ async function handlePhotoImage(request, env, cors, assetId) {
     const response = new Response(thumb.body, { status: 200, headers });
     if (cache) await cache.put(cacheKey, response.clone());
     return request.method === 'HEAD' ? new Response(null, response) : response;
+  }
+
+  // 原图：国内节点优先从上海 COS 读（免跨境），失败或非国内来源则回落到 R2。
+  // COS 侧原图是 R2 的等价镜像，命名差异由 originalKeysFor() 兜底。
+  // 注意 `avif` 变体（历史/兼容用途）不走 COS：上海的兄弟文件命名不可靠，只认 R2。
+  if (!isAvif && isChinaNodeRequest(request)) {
+    const fromCos = await fetchCosOriginal(env, reference.key);
+    if (fromCos) {
+      const cosHeaders = photoHeaders(cors);
+      cosHeaders.set('Content-Type', 'image/jpeg');
+      cosHeaders.set('Content-Disposition', 'inline');
+      cosHeaders.set('Content-Length', String(fromCos.size));
+      cosHeaders.set('Cache-Control', 'public, max-age=31536000, immutable');
+      cosHeaders.set('CDN-Cache-Control', 'public, max-age=31536000, immutable');
+      const cosResponse = new Response(fromCos.body, { status: 200, headers: cosHeaders });
+      if (cache) await cache.put(cacheKey, cosResponse.clone());
+      return request.method === 'HEAD' ? new Response(null, cosResponse) : cosResponse;
+    }
   }
 
   if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);

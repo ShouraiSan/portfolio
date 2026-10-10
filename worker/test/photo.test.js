@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import worker, { createPhotoSignature, normalizePhotoRequest, verifyPhotoSignature } from '../src/index.js';
+import worker, { createPhotoSignature, imageKeysFor, normalizePhotoRequest, originalKeysFor, thumbCandidates, verifyPhotoSignature } from '../src/index.js';
 import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
@@ -331,4 +331,173 @@ test('image route rejects expired signatures, tampered versions, and illegal pat
 
   const illegalPath = new Request('https://kensym15.dpdns.org/photo/image/not-a-valid-asset-id', { headers: trustedHeaders });
   assert.equal((await worker.fetch(illegalPath, env)).status, 404);
+});
+
+// ---------------------------------------------------------------------------
+// COS 侧「保留半角空格」的命名兜底
+//
+// 实测桶内布局：58 张原图里 27 张的文件名含半角空格
+// （例如 "bocchi (5 - 12)"、"hobby_figure（nomark (1 - 26)"），
+// R2 侧的 objectKey 用下划线形态，两侧只有「空格 <-> 下划线」这一处差异。
+// 缺了这一变体时缩略图/预览图会全部取不到，前端 onError 回落到整张原图。
+// ---------------------------------------------------------------------------
+
+test('thumbCandidates generates the space-preserving variant', () => {
+  const candidates = thumbCandidates('人像/_DSC6557.JPG');
+  assert.ok(candidates.includes('_DSC6557'), 'should keep the plain base name');
+
+  // 桶内实测：`thumbs/人像/bocchi (5 - 12).avif` 存在，而 `bocchi_(5_-_12).avif` 不存在。
+  // 因此从下划线形态的 objectKey 出发必须能推出含空格的形态。
+  const spaced = thumbCandidates('人像/bocchi_(5_-_12).jpg');
+  assert.ok(
+    spaced.includes('bocchi (5 - 12)'),
+    `space variant missing, got: ${spaced.join(' | ')}`,
+  );
+
+  // 含固有下划线的名字（hobby_figure）配合一个空格，真实对应
+  // 桶内的 `thumbs/手办/hobby_figure（nomark (1 - 26).avif`
+  const mixed = thumbCandidates('手办/hobby_figure（nomark_(1_-_26).jpg');
+  assert.ok(
+    mixed.includes('hobby_figure（nomark (1 - 26)'),
+    `mixed variant missing, got: ${mixed.join(' | ')}`,
+  );
+  // 原始 key 形态必须保留（零成本命中路径）
+  assert.ok(mixed.includes('hobby_figure（nomark_(1_-_26)'), 'original base name must be preserved');
+});
+
+test('imageKeysFor resolves grouped thumb and preview keys for space-containing names', () => {
+  const photo = { objectKey: '人像/bocchi_(5_-_12).jpg', category: '人像', variant: 'thumb' };
+  const thumbKeys = imageKeysFor(photo);
+  assert.ok(thumbKeys.includes('thumbs/人像/bocchi (5 - 12).avif'), 'thumb key with spaces required');
+  // 已知分类必须排在最前，避免先试其他分类造成无效请求
+  assert.ok(thumbKeys[0].startsWith('thumbs/人像/'), `known category should lead, got ${thumbKeys[0]}`);
+
+  const previewKeys = imageKeysFor({ ...photo, variant: 'preview' });
+  assert.ok(previewKeys.includes('previews/人像/bocchi (5 - 12).avif'), 'preview key with spaces required');
+  // 平铺历史结构仍作为兜底保留
+  assert.ok(previewKeys.includes('previews/bocchi (5 - 12).avif'), 'flat legacy preview key required');
+});
+
+test('originalKeysFor keeps the original extension case and offers a space variant', () => {
+  // 大小写逐个文件继承原始命名：桶内既有大写 .JPG 也有小写 .jpg
+  const upper = originalKeysFor('人像/_DSC6557.JPG');
+  assert.equal(upper[0], '人像/_DSC6557.JPG');
+  assert.ok(!upper.some((key) => key.endsWith('.jpg')), 'must not lowercase the extension');
+
+  // 精确形态永远排首位：COS key 与 R2 key 相同的那些照片零成本命中
+  assert.equal(originalKeysFor('风光/Chenshan_Park-7889.jpg')[0], '风光/Chenshan_Park-7889.jpg');
+  assert.equal(originalKeysFor('风光/Hokkaidou-3.jpg')[0], '风光/Hokkaidou-3.jpg');
+
+  // 含空格的对象名（桶内 58 张里的 27 张）必须能推出「空格 -> 下划线」形态
+  assert.ok(
+    originalKeysFor('人像/bocchi (5 - 12).jpg').includes('人像/bocchi_(5_-_12).jpg'),
+    'space -> underscore variant required',
+  );
+  // 固有下划线 + 空格混合命名，下划线必须保留
+  assert.ok(
+    originalKeysFor('手办/hobby_figure（nomark (1 - 26).jpg').includes('手办/hobby_figure（nomark_(1_-_26).jpg'),
+    'inherent underscore must survive the transformation',
+  );
+
+  const empty = originalKeysFor('');
+  assert.deepEqual(empty, [], 'empty key yields no candidates');
+});
+
+test('China node loads the original JPG from Shanghai COS', async () => {
+  clearPhotoCatalogCache();
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  const cosBytes = new Uint8Array([0x43, 0x4f, 0x53]);   // "COS"
+  const r2Bytes = new Uint8Array([0x52, 0x32]);          // "R2"
+  globalThis.fetch = async (input) => {
+    requested.push(typeof input === 'string' ? input : input.url);
+    return new Response(cosBytes, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+  };
+  try {
+    const r2Object = {
+      key: '风光/Chenshan_Park-7889.jpg', size: r2Bytes.byteLength, etag: 'etag-r2', httpEtag: '"etag-r2"',
+      uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: r2Bytes,
+    };
+    const bucket = {
+      list: async () => ({ objects: [r2Object], truncated: false }),
+      get: async (key) => key === r2Object.key ? r2Object : null,
+    };
+    const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+
+    const image = await worker.fetch(new Request(photo.original.url, { headers }), directEnv);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/jpeg');
+    // 必须来自 COS 的字节，而不是 R2 的那份
+    assert.deepEqual(new Uint8Array(await image.arrayBuffer()), cosBytes);
+    assert.equal(requested.length > 0, true);
+    // encodePath() 逐段百分号编码，因此中文分类目录在 URL 里是编码后的形态
+    assert.match(requested[0], /^https:\/\/cos\.example\.com\/%E9%A3%8E%E5%85%89\//);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('overseas original never contacts Shanghai COS', async () => {
+  clearPhotoCatalogCache();
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    requested.push(typeof input === 'string' ? input : input.url);
+    return new Response(new Uint8Array([0x43]), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+  };
+  try {
+    const r2Bytes = new Uint8Array([0x52, 0x32]);
+    const r2Object = {
+      key: '风光/Chenshan_Park-7889.jpg', size: r2Bytes.byteLength, etag: 'etag-r2', httpEtag: '"etag-r2"',
+      uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: r2Bytes,
+    };
+    const bucket = {
+      list: async () => ({ objects: [r2Object], truncated: false }),
+      get: async (key) => key === r2Object.key ? r2Object : null,
+    };
+    const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
+    const headers = { Referer: 'https://shouraisan.github.io/portfolio/photography.html', Origin: 'https://shouraisan.github.io' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+
+    const image = await worker.fetch(new Request(photo.original.url, { headers }), directEnv);
+    assert.equal(image.status, 200);
+    assert.deepEqual(new Uint8Array(await image.arrayBuffer()), r2Bytes);
+    // R2 是唯一主节点：国外来源的原图不得触碰 COS
+    assert.equal(requested.length, 0);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('China node falls back to R2 original when the COS mirror is unavailable', async () => {
+  clearPhotoCatalogCache();
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => { throw new Error('cos down'); };
+  try {
+    const r2Bytes = new Uint8Array([0x52, 0x32, 0x46]);
+    const r2Object = {
+      key: '风光/Chenshan_Park-7889.jpg', size: r2Bytes.byteLength, etag: 'etag-r2', httpEtag: '"etag-r2"',
+      uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: r2Bytes,
+    };
+    const bucket = {
+      list: async () => ({ objects: [r2Object], truncated: false }),
+      get: async (key) => key === r2Object.key ? r2Object : null,
+    };
+    const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+    const image = await worker.fetch(new Request(photo.original.url, { headers }), directEnv);
+    assert.equal(image.status, 200);
+    assert.deepEqual(new Uint8Array(await image.arrayBuffer()), r2Bytes);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
 });
