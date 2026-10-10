@@ -575,6 +575,7 @@ pnpm worker:deploy
 | D8 | Actions 页面自检清单硬编码 | `deploy-cos.yml` | `"" "photography/" "capabilities/"` 是写死的；新增页面不会自动纳入验证，容易「部署成功但新页不可达」 |
 | D9 | ~~本目录不含 git 元数据~~ | 根目录 | **实测更正：本目录就是完整的 git 工作仓库。** `origin` = `https://github.com/ShouraiSan/portfolio.git`，分支 `main`。初始提交 `1e7ec9e4`「Deploy portfolio website」。**注意工具陷阱**：`glob` 会静默排除 `.git/`（即使 `**` 与 `*` 模式），判断 VCS 状态必须用 read/grep 直接读 `.git/`，不要用 glob |
 | D10 | 测试覆盖不均 | `worker/test/` | `photo.test.js`（293 行，覆盖签名/CORS/双源分流/越权/非法路径）+ `photo-catalog.test.js`（69 行）+ `image-converter/test/worker.test.js`。但**视频 `/media/*` 与页面回源逻辑没有测试** |
+| D11 | 空的 `public/assets/` 目录 | `public/` | **0 个文件**，git 未跟踪（`public/` 下仅 `favicon.svg` 被跟踪），源码中无任何引用 —— 某次实验的回滚残留。Vite 会把它当静态目录扫描，可安全删除（本次未动） |
 
 ---
 
