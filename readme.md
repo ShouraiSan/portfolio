@@ -52,6 +52,17 @@ git push origin main
 - 只改了 Worker 代码（`worker/`、`wrangler.toml`）时注意：**站点 CI 不会部署 Worker**，还需要额外执行 `pnpm worker:deploy`（见 §13.5）。两者都要做。
 - 涉及密钥的改动**永远不要**提交（见 §7.4 与 §10「不要做」）。
 
+> ⚠️ **本机 push 常见故障：`Failed to connect to github.com:443`**
+> 这台机器上 `github.com:443` 直连会被阻断（DNS 正常解析到真实 IP `20.205.243.166`，但 TCP 连不上），而本机有代理在 `127.0.0.1:7897`（Clash 默认端口）。绕过方式：
+>
+> ```powershell
+> git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
+> ```
+>
+> 该代理端口是**本机环境相关**的，不要写进仓库配置。若端口变了，先探测：
+> `Test-NetConnection 127.0.0.1 -Port 7897 -InformationLevel Quiet`
+> 验证推送是否落地不要用 `git ls-remote`（它同样不走代理），加同样的 `-c` 参数即可。
+
 ---
 
 ## 1. 完整目录结构（含每个文件的职责）
