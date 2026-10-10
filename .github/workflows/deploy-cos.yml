@@ -128,6 +128,13 @@ jobs:
           coscmd -d upload -r ./dist/assets/ /assets/ -y -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
           echo "::endgroup::"
 
+          # 字体显式指定 Content-Type：COS 的扩展名→MIME 默认表里没有 .woff2，
+          # 不指定实测会以 application/octet-stream 提供。严格说这不致命（font/* 的要求
+          # 只对跨源字体生效，而字体与页面同源），但「靠浏览器宽容度」的假设不值得留。
+          echo "::group::上传字体（显式 font/woff2 + 长期强缓存）"
+          coscmd -d upload -r ./dist/assets/ /assets/ -y --include '*.woff2' -H '{"Cache-Control":"public, max-age=31536000, immutable", "Content-Type":"font/woff2"}'
+          echo "::endgroup::"
+
           echo "::group::上传 favicon（文件名不含哈希，用中等缓存）"
           coscmd -d upload -r ./dist/favicon.svg /favicon.svg -y -H '{"Cache-Control":"public, max-age=86400"}'
           echo "::endgroup::"
@@ -196,6 +203,23 @@ jobs:
             asset_lines="${asset_lines}$(printf -- '- `%s` — HTTP %s — Cache-Control: `%s`\n' "$key" "$code" "${cache:-<无>}")"
           done
 
+          # 字体单独校验：既要 200，也要 **Content-Type 是 font/woff2**。
+          # COS 默认 MIME 表没有 .woff2，漏了显式声明就会以 application/octet-stream
+          # 提供 —— 多数浏览器容忍，但 Firefox 对字体 MIME 严格，属于静默隐患。
+          font_ok=1
+          fonts_checked=0
+          font_lines=""
+          for f in $(find ./dist/assets -type f -name '*.woff2' | head -3); do
+            key="${f#./dist/}"
+            meta=$(curl -s -o /dev/null -D - --max-time 20 "https://${BUCKET}.cos.${REGION}.myqcloud.com/${key}" 2>/dev/null || true)
+            code=$(printf '%s' "$meta" | head -1 | awk '{print $2}')
+            ctype=$(printf '%s' "$meta" | tr -d '\r' | awk 'tolower($1)=="content-type:"{ $1=""; sub(/^ /,""); print; exit }')
+            echo "  ${key} -> HTTP ${code}  Content-Type: ${ctype:-<无>}"
+            fonts_checked=$((fonts_checked + 1))
+            if [ "$code" != "200" ] || [ "${ctype:-}" != "font/woff2" ]; then font_ok=0; fi
+            font_lines="${font_lines}$(printf -- '- `%s` — HTTP %s — Content-Type: `%s`\n' "$key" "$code" "${ctype:-<无>}")"
+          done
+
           {
             echo "## 部署结果"
             echo ""
@@ -203,17 +227,26 @@ jobs:
             echo "- 上传文件数: $(find ./dist -type f | wc -l)"
             echo "- 入口页全部 200: $([ "$html_ok" = "1" ] && echo '是' || echo "否 ->${html_failed}")"
             echo "- 资源缓存头: ${assets_with_cache}/${assets_checked} 已生效"
+            echo "- 字体 Content-Type 正确: $([ "$font_ok" = "1" ] && echo "是（${fonts_checked} 个）" || echo '否')"
             echo ""
             echo "### 资源响应头实测"
             echo ""
             printf '%s' "$asset_lines"
+            echo ""
+            echo "### 字体响应头实测"
+            echo ""
+            printf '%s' "$font_lines"
           } >> "$GITHUB_STEP_SUMMARY"
 
-          # 判定：页面必须可达，且缓存头必须真正生效。
+          # 判定：页面必须可达，缓存头必须生效，字体 MIME 必须正确。
+          # 注意字体这条：Content-Type 错成 application/octet-stream 时多数浏览器
+          # 仍能渲染，站点看起来完全正常，所以只有**断言**才能拦住它。
           if [ "$html_ok" != "1" ]; then
             verdict="FAIL-页面不可达"
           elif [ "$assets_checked" -gt 0 ] && [ "$assets_with_cache" -eq 0 ]; then
             verdict="FAIL-缓存头未生效"
+          elif [ "$font_ok" != "1" ]; then
+            verdict="FAIL-字体MIME不正确"
           else
             verdict="OK"
           fi
@@ -229,6 +262,7 @@ jobs:
             echo "files=$(find ./dist -type f | wc -l)"
             echo "pages_ok=$([ "$html_ok" = "1" ] && echo yes || echo "no${html_failed}")"
             echo "assets_cache=${assets_with_cache}/${assets_checked}"
+            echo "fonts_ok=$([ "$font_ok" = "1" ] && echo "yes(${fonts_checked})" || echo no)"
             echo "sync_delete=${INPUT_SYNC_DELETE:-false}"
           } > "${report}"
 
@@ -244,9 +278,14 @@ jobs:
           rm -f "${report}"
 
           if [ "$verdict" = "OK" ]; then
-            echo "::notice::部署验证通过：页面可达且资源缓存头已生效"
+            echo "::notice::部署验证通过：页面可达、资源缓存头生效、字体 MIME 正确"
           elif [ "$html_ok" != "1" ]; then
             echo "::error::页面验证失败：以下入口页不是 200:${html_failed}"
+            rm -f ~/.cos.conf
+            exit 1
+          elif [ "$font_ok" != "1" ]; then
+            echo "::error::字体 Content-Type 不是 font/woff2（见 Summary 里的字体响应头实测）。"
+            echo "::error::检查 deploy-cos.yml 中「上传字体」那一步是否仍在，以及 COS 是否覆盖了该头。"
             rm -f ~/.cos.conf
             exit 1
           else

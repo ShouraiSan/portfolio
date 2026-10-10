@@ -56,7 +56,7 @@ git push origin main
   本机代理在 `127.0.0.1:7897`（Clash 默认端口）。端口是**本机环境相关**的，不要写进仓库配置；
   若变了先探测 `Test-NetConnection 127.0.0.1 -Port 7897 -InformationLevel Quiet`。
 - 一次改动一个 commit，message 写清做了什么（对照仓库既有风格，如 `Serve photo API from custom domain: workers.dev is unreachable in mainland China`）。
-- **push 后确认 CI 结果**：Actions 跑完后，用一次 HTTP 请求核对部署报告 `https://kensym-1331415098.cos.ap-hongkong.myqcloud.com/deploy-report.txt`，看 `status=OK`、`pages_ok=yes`、`assets_cache=3/3`。CI 失败时**不要**当作已完成。
+- **push 后确认 CI 结果**：Actions 跑完后，用一次 HTTP 请求核对部署报告 `https://kensym-1331415098.cos.ap-hongkong.myqcloud.com/deploy-report.txt`，看 `status=OK`、`pages_ok=yes`、`assets_cache=3/3`、`fonts_ok=yes(2)`。CI 失败时**不要**当作已完成。
 - 只改了 Worker 代码（`worker/`、`wrangler.toml`）时注意：**站点 CI 不会部署 Worker**，还需要额外执行 `pnpm worker:deploy`（见 §13.5）。两者都要做。
 - 涉及密钥的改动**永远不要**提交（见 §7.4 与 §10「不要做」）。
 - 确认推送是否落地时，`git ls-remote` **同样需要带 `-c` 代理参数**，否则会误报连接失败。
@@ -1084,7 +1084,14 @@ git add -A ; git commit -m "..." ; git push origin main
 https://kensym-1331415098.cos.ap-hongkong.myqcloud.com/deploy-report.txt
 ```
 
-看 `status=OK`、`pages_ok=yes`、`assets_cache=3/3`。缓存头未生效是最常见的失败（见 §8.1 的 `-s` 说明）。
+看 `status=OK`、`pages_ok=yes`、`assets_cache=3/3`、`fonts_ok=yes(2)`。缓存头未生效是最常见的失败（见 §8.1 的 `-s` 说明）。
+
+> **`fonts_ok` 这条为什么单独查**：COS 的扩展名→MIME 默认表里没有 `.woff2`。
+> 不显式指定 `Content-Type` 时它会以 `application/octet-stream` 提供 —— 实测**确实是这个行为**。
+> 严格说这不致命：`font/*` 的要求**只对跨源字体生效**，而我们的字体与页面同源，
+> Chrome / Safari / Firefox 都能正常渲染。但这类「靠浏览器宽容度」的假设不值得留 ——
+> CI 与 `push-to-cos.ps1` 都已显式声明 `Content-Type: font/woff2`，且 CI 把它纳入判定
+> （`FAIL-字体MIME不正确`），顺带防住将来字体改为跨源提供的情况。
 
 ### 13.5 部署 Worker
 

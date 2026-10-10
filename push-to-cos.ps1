@@ -74,6 +74,16 @@ Write-Host "==> 上传 assets（长期强缓存）" -ForegroundColor Cyan
 coscmd upload -r "./$SourceDir/assets/" /assets/ -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
 if ($LASTEXITCODE -ne 0) { throw "assets 上传失败，请检查桶名/地域/密钥权限" }
 
+# 字体显式指定 Content-Type：COS 的扩展名→MIME 默认表里没有 .woff2，
+# 不指定实测会以 application/octet-stream 提供。
+# 严格说这不致命 —— font/* 的要求只对**跨源**字体生效，而字体与页面同源，
+# 各浏览器都正常渲染。但「靠浏览器宽容度」的假设不值得留，且万一将来改为
+# 跨源提供就会真的坏掉，所以显式声明。
+# 字体落在 dist/assets/ 下（Vite 会给它加内容 hash），所以这条要在 assets 之后覆盖一次。
+Write-Host "==> 上传字体（显式 font/woff2 + 长期强缓存）" -ForegroundColor Cyan
+coscmd upload -r "./$SourceDir/assets/" /assets/ --include '*.woff2' -H '{"Cache-Control":"public, max-age=31536000, immutable", "Content-Type":"font/woff2"}'
+if ($LASTEXITCODE -ne 0) { throw "字体上传失败" }
+
 Write-Host "==> 上传 favicon（中等缓存）" -ForegroundColor Cyan
 coscmd upload -r "./$SourceDir/favicon.svg" /favicon.svg -H '{"Cache-Control":"public, max-age=86400"}'
 if ($LASTEXITCODE -ne 0) { throw "favicon 上传失败" }
