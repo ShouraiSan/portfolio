@@ -10,10 +10,11 @@ import './styles.css';
 const remotePhotoBase = 'https://kensym15.dpdns.org/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
-// 视口提前量：图片在进入视口下方 400px 时才开始加载。
-// 不能用原生 loading="lazy"：它的预加载距离由浏览器决定（快速网络下常达 1250px+），
-// 会导致滚一遍就把整页图片全部下完。这里自己控制 src，未进入视口前不发起任何请求。
-const THUMB_ROOT_MARGIN = '0px 0px 400px 0px';
+// 加载触发条件：图片露出视口 25% 时才开始下载。
+// 不用 rootMargin 的提前量 —— 那会在图片还没划到时就预加载，
+// 滚动较慢时能明显看出「人还没看到、图已经下完」。
+// 也不用原生 loading="lazy"：它的预加载距离由浏览器决定（快速网络下常达 1250px+）。
+const THUMB_VIEWPORT_THRESHOLD = 0.25;
 
 function Picture({ photo, mode, onLoad, onError, stagger = 0 }) {
   const isThumbnail = mode === 'thumbnail';
@@ -34,7 +35,7 @@ function Picture({ photo, mode, onLoad, onError, stagger = 0 }) {
     setInView(!isThumbnail || Boolean(photo.priority));
   }, [photo.assetId, isThumbnail, photo.priority]);
 
-  // 观察自己是否接近视口；一旦接近就固定为 true，不再回退（避免来回滚动反复请求）
+  // 观察自己是否已进入视口；一旦触发就固定为 true，不再回退（避免来回滚动反复请求）
   useEffect(() => {
     if (!isThumbnail || inView) return undefined;
     const node = frameRef.current;
@@ -45,7 +46,7 @@ function Picture({ photo, mode, onLoad, onError, stagger = 0 }) {
         setInView(true);
         observer.disconnect();
       }
-    }, { rootMargin: THUMB_ROOT_MARGIN });
+    }, { threshold: THUMB_VIEWPORT_THRESHOLD });
     observer.observe(node);
     return () => observer.disconnect();
   }, [isThumbnail, inView, photo.assetId]);
