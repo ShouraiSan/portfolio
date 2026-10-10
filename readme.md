@@ -176,7 +176,9 @@ E:\codex\个人网站\
 
 主 Worker 的 `routes` 只声明了 `{ pattern = "kensym15.dpdns.org", custom_domain = true }` —— **只拦子域，不拦裸域**，这正是双节点能并存的前提。新增任何路由前先确认不会把 `kensym15.top` 或 `*.dpdns.org` 的静态站请求吞掉。
 
-### 3.3 摄影图片分流的判定规则
+### 3.3 摄影图片分流的判定规则（R2 为唯一主节点）
+
+**核心原则：R2 是唯一主节点；上海 COS 只是国内侧的加速镜像，国外节点绝不接入它。**
 
 `worker/src/index.js` 的 `isChinaNodeRequest()`：
 
@@ -185,10 +187,40 @@ return /(^|\.)kensym15\.top$/i.test(hostname)          // 国内入口
     || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i // 本地开发
 ```
 
-- **命中** → 缩略图/预览图主源用**上海 COS**，失败回落 R2。
-- **未命中**（GitHub Pages、dpdns.org、workers.dev 等）→ 主源用 **R2**，失败回落 COS。
-- 判定依据是请求头 `Origin`，缺失时退回 `Referer` 的 origin。
-- **灯箱「原图」永远只从 R2 读**（流量免费），不参与分流。
+| 请求来源 | thumb / preview 主源 | 兜底 | 原图 |
+| --- | --- | --- | --- |
+| `kensym15.top`（国内）+ localhost | **上海 COS** | R2 | R2（见下方说明） |
+| 其它一切来源（GitHub Pages、dpdns.org、workers.dev、未识别） | **R2** | **无兜底** | R2 |
+
+实现（`fetchThumb()`）：
+
+```js
+if (!isChinaNodeRequest(request)) return fetchR2Image(env, photo);   // 国外：只认 R2
+return (await fetchCosImage(env, photo)) || (await fetchR2Image(env, photo)); // 国内：COS 优先，R2 兜底
+```
+
+**三个容易误解的点**
+
+1. **访客不直连任何桶，请求永远先到 Worker。** 无论国内还是国外，页面里的 `img src` 都指向 Worker 域名（`/photo/image/:assetId?variant=...`），由 Worker 校验签名后决定回源哪一侧。`Origin`/`Referer` 只是告诉 Worker「这个访客属于国内还是国外」，判定完全在服务端，前端不需要知道自己在哪个节点。
+2. **判定依据是「访客从哪个站点的页面发起请求」**：
+   - 访客在 `kensym15.top` → 图片跨源 → 浏览器自动带 `Origin: https://kensym15.top` → **命中，走上海 COS**。
+   - 访客在 `dpdns.org` → 页面与图片同源 → 带 `Origin: https://kensym15.dpdns.org` → **未命中，走 R2**。
+   - `Origin` 缺失时退回解析 `Referer` 的 origin。
+3. **原图（灯箱大图）当前不参与分流，永远从 R2 读**（`env.photo.get(reference.key)`）。原因见下。
+
+**为什么国外侧要「没有兜底」**
+
+R2 是主节点，国外访客的命中必须落在 R2。上海桶是专为国内访客准备的加速副本，让海外请求回落到上海会横跨太平洋，反而更慢。所以国外侧在 R2 未命中时**直接返回 404**，不去试探上海桶 —— 这条规则由测试 `overseas node never falls back to Shanghai COS when R2 misses` 锁定。
+
+**国内侧为什么保留 R2 兜底**
+
+上海桶是镜像，与 R2 可能不同步（新图上传后镜像尚未生成）。此时国内访客宁可多等一会儿从 R2 取，也不该看到 404。
+
+**原图为什么不走上海桶**
+
+- 设计意图上，R2 出口流量免费，而上海 COS 的外网下行按量计费，原图单张约 14 MB，全量走 COS 成本可观。
+- **现实约束：上海桶里目前根本没有 JPG 原图。** 已核实上海桶 `photo-1331415098` 只有两套 AVIF（`thumbs/<分类>/*.avif` 约 800px、`previews/<分类>/*.avif` 2000px），任何 JPG 路径均返回 404。`.photo-thumbs/upload/` 里的全尺寸目录实际是**缩略图尺寸**（例如 `_DSC6557.avif` 24,222 字节，与缩略图完全相同），且从未上传到上海。
+- 因此「国内原图走上海桶」需要**先补数据、再改代码**，见 §11 第 13 条。
 
 ---
 
@@ -274,7 +306,7 @@ return /(^|\.)kensym15\.top$/i.test(hostname)          // 国内入口
 | `OPTIONS *` | OPTIONS | 来源在白名单内返回 204 + CORS，否则 403 |
 | `/media/*` | GET/HEAD | **视频代理**：`media` Map 把 slug 映射为 R2 对象名 → `env.MEDIA.get(key, {range})` 支持 Range，206/200 + `Accept-Ranges` |
 | `/photo/manifest` | GET | 扫描 R2 生成清单 + 为每张图签发 3 个短时 URL |
-| `/photo/image/:assetId` | GET/HEAD | 签名校验 → 解密 ref → 按 `variant` 取图（thumb/preview 双源分流；original/avif 只走 R2） |
+| `/photo/image/:assetId` | GET/HEAD | 签名校验 → 解密 ref → 按 `variant` 取图：`thumb`/`preview` 仅国内来源优先上海 COS（兜底 R2），国外来源只走 R2；`original`/`avif` 一律只走 R2 |
 | `/photo/*`（其它） | GET | 404 JSON |
 | 其它任意路径 | GET/HEAD | **回源** `PORTFOLIO_ORIGIN`（GitHub Pages），转发响应并加 `Cache-Control: public, max-age=300` 与安全头 |
 
@@ -287,6 +319,15 @@ return /(^|\.)kensym15\.top$/i.test(hostname)          // 国内入口
 3. **加密引用（AES-GCM）**：URL 里的 `ref` 参数是 `objectKey + version` 的加密串（密钥由 `PHOTO_SIGNING_SECRET` 经 SHA-256 派生），因此浏览器**看不到也无法推导对象路径**。缩略图/预览图的 `ref` 里放的是逻辑键 `thumb:<分类>/<R2文件名>` 或 `preview:<分类>/<文件名>`，仅用于签名绑定与推导源键。
 
 补充约束：`assetId` 必须是 36 位十六进制 UUID 形态；`normalizePhotoRequest()` 对 `v` / `exp` / `ref` / `variant` 做正则白名单（`variant` 只允许 `avif` / `thumb` / `preview`）；CORS 永不返回 `*`。
+
+> ⚠️ **实测偏差：这套签名只保护 R2，不保护上海 COS。**
+> 上海桶 `photo-1331415098` 的 **AVIF 变体是公开可读的**。已实测：不带任何签名、不带 Referer 直接请求
+> `https://photo-1331415098.cos.ap-shanghai.myqcloud.com/previews/人像/_DSC6557.avif` → **200，108,482 字节**；
+> `thumbs/人像/_DSC6557.avif` → **200，24,222 字节**。
+> 也就是说，只要猜到命名规则（`<分类>/<原图文件名>.avif`），任何人都能**绕过 Worker 签名直接匿名取图**。
+> 后果：§5.2 第 3 条「浏览器无法推导对象路径」这一保护对上海侧不成立；防盗链、防枚举、防长期复用**仅对 R2 有效**。
+> 影响可控之处：上海桶只存 800px 缩略图与 2000px 预览图，**没有原图**，所以泄漏的最多是这两种降级变体。
+> 处置选项见 §11 第 14 条。
 
 **能力边界（必须如实告知用户）**：来源校验 + 短时签名 + 不可猜测 ID 只能降低盗链、枚举与长期复用，**无法阻止用户保存或截屏已经成功显示在浏览器中的图片**。
 
@@ -638,6 +679,21 @@ pnpm worker:deploy
 10. **字体自托管**（C3）：下载 Manrope / DM Sans woff2 子集，放 COS（国内）与 R2（国外），改 `@font-face` + `font-display: swap`，去掉第 1 行的 Google Fonts `@import`。**这是国内节点视觉一致性的关键修复。**
 11. **补测试**（D10）：为 `/media/*` 视频代理（Range 请求、白名单拒绝）与页面回源逻辑添加 `node:test` 用例。
 12. **页面自检清单外部化**（D8）：让 `deploy-cos.yml` 从 `dist/` 实际产出推导待探测路径，替代硬编码列表。
+
+**第四批 · 待决策：上海桶相关（阻塞中，需先定方向）**
+
+13. **国内节点的 JPG 原图改走上海桶**（用户已提出需求，**代码与数据都未就绪**）。
+    - **阻塞事实**：上海桶里**没有 JPG 原图**（已实测各种路径均 404），只有 AVIF 缩略图与预览图。所以这不只是改代码，还要先决定原图放哪里。
+    - 若要实现，需要同时做三件事：
+      1. 上传 JPG 原图到上海桶（58 张，单张 7–10 MB，总量约数百 MB；**上海 COS 按外网下行计费，成本与图量成正比**）；
+      2. 扩展签名/引用机制，使 `variant=original` 的 `ref` 能同时表达 R2 键与 COS 键（当前 `original` 的 `ref` 只装 R2 `objectKey`）；
+      3. 在 `handlePhotoImage()` 的原图分支（现为 `env.photo.get(reference.key)`）加国内分流 + R2 兜底。
+    - **更省事的替代方案（推荐先评估）**：不改数据，改前端策略 —— 国内访客点「查看原图」时**继续用 2000px 预览图**（已在上海桶，约 220 KB，秒开），只有国外访客才去 R2 拉 14 MB 原图。视觉上 2000px 在多数屏幕已足够，且省掉全部上行成本与代码复杂度。
+14. **上海桶公开可读的处置**（安全，见 §5.2 实测偏差）。三个选项：
+    - (a) **接受现状**：泄漏的只是 800px 缩略图与 2000px 预览图，没有原图；且这些图本来就会显示给访客。成本最低。
+    - (b) **关掉公共读**：桶改为私有。因 Worker 取图走的是默认端点 + 签名校验，**不影响国内侧功能**，可显著收窄暴露面。需要确认 Worker 侧没有任何依赖匿名读取的逻辑（当前 `fetchCosImage()` 是普通 `fetch`，不带凭据，故必须保持公共读或改用带签名的 COS 请求）。
+    - (c) **改用 COS 私有 + Worker 侧签名请求**：最彻底但最复杂，需要引入腾讯云 SDK 或手写 COS 签名。
+    - 注意：`.photo-thumbs/upload/` 目录（58 个文件、2.3 MB）**实际是缩略图尺寸**，并非全尺寸原图，且从未上传到上海 —— 清理时不要误以为它是原图备份。
 
 ---
 
