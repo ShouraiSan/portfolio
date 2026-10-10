@@ -182,24 +182,26 @@ function encodePath(key) {
 }
 
 // 缩略图与预览图的对象键。
-// 两者的目录结构不同，请注意：
-//   thumbs/   缩略图 800px  -> thumbs/<分类>/<文件名>.avif
-//   previews/ 预览图 2000px -> previews/<文件名>.avif   （平铺，无分类层，桶里就是这么放的）
+// 两者都按「分类目录」组织：<prefix>/<分类>/<文件名>.avif
+// 预览图额外兼容平铺形式 <prefix>/<文件名>.avif（早期上传没有分类层时的结构）。
 // R2 与 COS 的文件名只有分隔符与前导下划线这几处差异，因此按变体逐个尝试。
 function imageKeysFor(photo) {
   const variant = photo.variant === 'preview' ? 'preview' : 'thumb';
   const defaultPrefix = variant === 'preview' ? 'previews' : 'thumbs';
   const prefix = String(photo.prefix || defaultPrefix).replace(/^\/+|\/+$/g, '');
-  const flat = variant === 'preview';
   const category = String(photo.category || '');
-  const categories = flat
-    ? ['']
-    : (COS_CATEGORIES.includes(category) ? [category] : COS_CATEGORIES);
+  // 已知分类时把它排在第一位，其余分类作为兜底，减少无效请求
+  const ordered = COS_CATEGORIES.includes(category)
+    ? [category, ...COS_CATEGORIES.filter((c) => c !== category)]
+    : COS_CATEGORIES;
+  const names = thumbCandidates(photo.objectKey);
   const keys = [];
-  for (const cat of categories) {
-    for (const name of thumbCandidates(photo.objectKey)) {
-      keys.push(cat ? `${prefix}/${cat}/${name}.avif` : `${prefix}/${name}.avif`);
-    }
+  for (const cat of ordered) {
+    for (const name of names) keys.push(`${prefix}/${cat}/${name}.avif`);
+  }
+  // 预览图再补一组平铺候选，兼容历史结构
+  if (variant === 'preview') {
+    for (const name of names) keys.push(`${prefix}/${name}.avif`);
   }
   return keys;
 }

@@ -113,7 +113,7 @@ test('manifest exposes a signed preview url for the lightbox', async () => {
   clearPhotoCatalogCache();
 });
 
-test('preview requests resolve to the flat previews/ prefix on COS', async () => {
+test('preview requests resolve to previews/<category>/ on COS', async () => {
   clearPhotoCatalogCache();
   const requested = [];
   const originalFetch = globalThis.fetch;
@@ -130,10 +130,10 @@ test('preview requests resolve to the flat previews/ prefix on COS', async () =>
     assert.equal(image.status, 200);
     assert.equal(image.headers.get('content-type'), 'image/avif');
     assert.deepEqual(new Uint8Array(await image.arrayBuffer()), cosPreviewObject.body);
-    // 必须是平铺路径 previews/<name>.avif，不能带分类目录
+    // 首选分类目录形式 previews/<分类>/<文件名>.avif，
+    // 且「已知分类」必须排在首位，避免先试其他分类造成无效请求
     assert.equal(requested.length > 0, true);
-    assert.match(requested[0], /^https:\/\/cos\.example\.com\/previews\//);
-    assert.equal(/\/previews\/[^/]+\//.test(requested[0]), false);
+    assert.match(requested[0], /^https:\/\/cos\.example\.com\/previews\/[^/]+\//);
   } finally {
     globalThis.fetch = originalFetch;
     clearPhotoCatalogCache();
