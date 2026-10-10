@@ -334,43 +334,43 @@ test('image route rejects expired signatures, tampered versions, and illegal pat
 });
 
 // ---------------------------------------------------------------------------
-// COS 侧「保留半角空格」的命名兜底
+// COS 侧对象名的命名规则
 //
-// 实测桶内布局：58 张原图里 27 张的文件名含半角空格
-// （例如 "bocchi (5 - 12)"、"hobby_figure（nomark (1 - 26)"），
-// R2 侧的 objectKey 用下划线形态，两侧只有「空格 <-> 下划线」这一处差异。
-// 缺了这一变体时缩略图/预览图会全部取不到，前端 onError 回落到整张原图。
+// 实测（带签名的 HEAD 逐条核实）：**thumbs / previews 的对象名与 R2 objectKey 一致**
+// —— 含半角空格与扩展名大小写，原样保留。例如 R2 的 `风光/Chenshan_Park-7889.jpg`
+// 对应 `thumbs/风光/Chenshan_Park-7889.avif`；R2 的 `人像/bocchi (5 - 12).jpg`
+// 对应 `thumbs/人像/bocchi (5 - 12).avif`。
+//
+// 因此派生规则是**恒等映射**，「原名」这一组就够用；其余变体只是容错兜底。
+// 曾经存在的「分隔符下划线→空格」变体（spaceVariant）已删除 —— 它很可能是多余的，
+// 当初认定它必要的依据来自被控制台乱码污染的比对结果，不可靠。
 // ---------------------------------------------------------------------------
 
-test('thumbCandidates generates the space-preserving variant', () => {
+test('thumbCandidates leads with the exact name and keeps tolerant fallbacks', () => {
   const candidates = thumbCandidates('人像/_DSC6557.JPG');
-  assert.ok(candidates.includes('_DSC6557'), 'should keep the plain base name');
+  // 首选必须是原名（零成本命中路径）
+  assert.equal(candidates[0], '_DSC6557');
+  // 固有下划线不能被破坏
+  assert.ok(candidates.includes('_DSC6557'), 'inherent underscore must survive');
 
-  // 桶内实测：`thumbs/人像/bocchi (5 - 12).avif` 存在，而 `bocchi_(5_-_12).avif` 不存在。
-  // 因此从下划线形态的 objectKey 出发必须能推出含空格的形态。
-  const spaced = thumbCandidates('人像/bocchi_(5_-_12).jpg');
-  assert.ok(
-    spaced.includes('bocchi (5 - 12)'),
-    `space variant missing, got: ${spaced.join(' | ')}`,
-  );
+  // 混合命名（固有下划线 + 分隔符）同样以原名优先
+  const mixed = thumbCandidates('手办/hobby_figure（nomark (1 - 26).jpg');
+  assert.equal(mixed[0], 'hobby_figure（nomark (1 - 26)');
 
-  // 含固有下划线的名字（hobby_figure）配合一个空格，真实对应
-  // 桶内的 `thumbs/手办/hobby_figure（nomark (1 - 26).avif`
-  const mixed = thumbCandidates('手办/hobby_figure（nomark_(1_-_26).jpg');
-  assert.ok(
-    mixed.includes('hobby_figure（nomark (1 - 26)'),
-    `mixed variant missing, got: ${mixed.join(' | ')}`,
-  );
-  // 原始 key 形态必须保留（零成本命中路径）
-  assert.ok(mixed.includes('hobby_figure（nomark_(1_-_26)'), 'original base name must be preserved');
+  // 容错变体仍然存在：空格→下划线 与 连字符互换
+  const spaced = thumbCandidates('人像/bocchi (5 - 12).jpg');
+  assert.ok(spaced.includes('bocchi_(5_-_12)'), 'space -> underscore fallback required');
+  assert.equal(spaced[0], 'bocchi (5 - 12)', 'exact name must come first');
 });
 
 test('imageKeysFor resolves grouped thumb and preview keys for space-containing names', () => {
-  const photo = { objectKey: '人像/bocchi_(5_-_12).jpg', category: '人像', variant: 'thumb' };
+  const photo = { objectKey: '人像/bocchi (5 - 12).jpg', category: '人像', variant: 'thumb' };
   const thumbKeys = imageKeysFor(photo);
   assert.ok(thumbKeys.includes('thumbs/人像/bocchi (5 - 12).avif'), 'thumb key with spaces required');
   // 已知分类必须排在最前，避免先试其他分类造成无效请求
   assert.ok(thumbKeys[0].startsWith('thumbs/人像/'), `known category should lead, got ${thumbKeys[0]}`);
+  // 原名派生出的键必须排在候选首部
+  assert.equal(thumbKeys[0], 'thumbs/人像/bocchi (5 - 12).avif');
 
   const previewKeys = imageKeysFor({ ...photo, variant: 'preview' });
   assert.ok(previewKeys.includes('previews/人像/bocchi (5 - 12).avif'), 'preview key with spaces required');

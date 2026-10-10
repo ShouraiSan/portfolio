@@ -259,38 +259,25 @@ export function normalizePhotoRequest(searchParams) {
   return value;
 }
 
-// 「空格→下划线」真正会产生的下划线：位于全角/半角括号或数字之前，或紧跟空格/括号/数字。
-// 必须定向还原而不是无差别替换，否则 "hobby_figure" 这类**固有下划线**会被破坏成
-// "hobby figure"，永远命中不了（实测 58 张里有 26 张属于这种混合命名）。
-const SEPARATOR_UNDERSCORE = /(?<=[\s（(0-9])_|_(?=[\s）)0-9（(])/g;
-
-function spaceVariant(name) {
-  return String(name || '').replace(SEPARATOR_UNDERSCORE, ' ');
-}
-
 // 摄影页网格缩略图的对象键。
 // 必须用 R2 对象键（objectKey）而不是 title：title 由 filenameTitle() 生成，
 // 其中 /[_-]+/g 会被替换成空格，连字符与下划线信息已丢失
 // （例如 "bocchi (5 - 12)" 会变成 "bocchi (5   12)"），无法还原真实文件名。
-// R2 与 COS 的文件名只有分隔符与前导下划线这几处差异，因此按变体逐个尝试。
+// R2 与 COS 的文件名在分隔符与前导下划线上可能有差异，因此按变体逐个尝试。
 const COS_CATEGORIES = ['人像', '手办', '街头', '风光'];
 
 export function thumbCandidates(objectKey) {
   const filename = String(objectKey || '').split('/').at(-1).replace(/\.[^.]+$/, '');
   let decoded = filename;
   try { decoded = decodeURIComponent(filename); } catch { /* 保留原样 */ }
-  // 五组基名：原名、连字符→下划线、下划线→连字符、空格→下划线，
-  // 以及「分隔符下划线→空格」（见 spaceVariant 的说明）。
-  // 最后一组是必需的：COS 侧实测 58 张里有 27 张的对象名**保留半角空格**
-  // （例如 "bocchi (5 - 12).avif"、"hobby_figure（nomark (1 - 26).avif"），
-  // 而 R2 的 objectKey 用下划线形态。缺这一组时这些图的缩略图/预览图全部取不到，
-  // 前端 Picture 的 onError 会回落到加载整张原图（体积差数十倍）。
+  // 四组基名：原名、连字符→下划线、下划线→连字符、空格→下划线。
+  // 「原名」这一组通常直接命中 —— 实测 COS 的 thumbs/previews 对象名与 R2 objectKey
+  // 一致（含空格与大小写，原样保留），所以后面几组只是容错兜底。
   const bases = [
     decoded,
     decoded.replace(/-/g, '_'),
     decoded.replace(/_/g, '-'),
     decoded.replace(/ /g, '_'),
-    spaceVariant(decoded),
   ];
   const candidates = [];
   for (const base of bases) {
@@ -348,10 +335,11 @@ export function originalKeysFor(objectKey) {
   const dot = filename.lastIndexOf('.');
   const base = dot > 0 ? filename.slice(0, dot) : filename;
   const extension = dot > 0 ? filename.slice(dot) : '';
+  // 首选原名（实测 COS 原图名与 R2 objectKey 一致，含空格与扩展名大小写）；
+  // 只额外保留「空格→下划线」这一个反向兜底，防止两侧命名不完全同步。
   const variants = [
     base,
-    spaceVariant(base),   // R2 的下划线形态 -> COS 的保留空格形态
-    base.replace(/ /g, '_'),   // 反向兜底
+    base.replace(/ /g, '_'),
   ];
   return [...new Set(variants.filter(Boolean).map((name) => `${dir}/${name}${extension}`))];
 }

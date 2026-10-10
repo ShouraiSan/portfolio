@@ -1,4 +1,4 @@
-﻿# 本地兜底上传脚本：当 GitHub Actions 不可用（或临时改版）时用这个手动发布到腾讯云 COS
+# 本地兜底上传脚本：当 GitHub Actions 不可用（或临时改版）时用这个手动发布到腾讯云 COS
 #
 # 用法：
 #   1. 先在当前 PowerShell 会话里设置环境变量（不要写进任何文件、不要提交到 Git）：
@@ -64,20 +64,27 @@ coscmd config -a $secretId -s $secretKey -b $bucket -r $region
 if ($LASTEXITCODE -ne 0) { throw "coscmd 配置失败，请检查桶名/地域/密钥是否正确" }
 
 # 与 CI 保持一致的缓存策略（顺序同样重要：HTML 最后传，确保 no-cache 生效）
+#
+# ★ 绝不要加 -s（sync）：coscmd 的 sync 会按「同名同内容」直接跳过文件，
+#   连对象元数据都不更新，导致新增的 Cache-Control 永远写不进去
+#   （现象：站点内容正常，但缓存头始终为空）。
+#   dist 只有约 300 KB，全量重传的代价可以忽略；正确性优先。
+#   CI（.github/workflows/deploy-cos.yml）正因这个坑去掉了 -s，这里必须保持一致。
 Write-Host "==> 上传 assets（长期强缓存）" -ForegroundColor Cyan
-coscmd upload -rs "./$SourceDir/assets/" /assets/ -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
+coscmd upload -r "./$SourceDir/assets/" /assets/ -H '{"Cache-Control":"public, max-age=31536000, immutable"}'
 if ($LASTEXITCODE -ne 0) { throw "assets 上传失败，请检查桶名/地域/密钥权限" }
 
 Write-Host "==> 上传 favicon（中等缓存）" -ForegroundColor Cyan
-coscmd upload -rs "./$SourceDir/favicon.svg" /favicon.svg -H '{"Cache-Control":"public, max-age=86400"}'
+coscmd upload -r "./$SourceDir/favicon.svg" /favicon.svg -H '{"Cache-Control":"public, max-age=86400"}'
 if ($LASTEXITCODE -ne 0) { throw "favicon 上传失败" }
 
 Write-Host "==> 上传 HTML（不缓存）" -ForegroundColor Cyan
-coscmd upload -rs "./$SourceDir/" / --include '*.html' -H '{"Cache-Control":"no-cache"}'
+coscmd upload -r "./$SourceDir/" / --include '*.html' -H '{"Cache-Control":"no-cache"}'
 if ($LASTEXITCODE -ne 0) { throw "HTML 上传失败，请检查桶名/地域/密钥权限，以及是否开启了公有读" }
 
 if ($SyncDelete) {
   Write-Host "==> 同步删除 COS 上多余的旧文件（需要 cos:DeleteObject 权限）" -ForegroundColor Yellow
+  # 这一处保留 -s 是刻意的：删除多余文件必须靠 sync 的比较才能算出差异
   coscmd upload -rs "./$SourceDir/" / --delete -y
   if ($LASTEXITCODE -ne 0) { throw "清理失败：子用户可能缺少 cos:DeleteObject 权限" }
 } else {
