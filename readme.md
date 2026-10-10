@@ -3,7 +3,7 @@
 > **本文档用途**：供「新开对话的 AI 助手」或「接手本项目的其他智能体/开发者」快速完整接班。
 > 读完这一份即可动手，不必再去翻 `doc/program.md` 与 `doc/design.md`（那两份是历史需求稿，仅作溯源）。
 >
-> **最后核对时间**：以当前工作区实际文件为准（React 19.3.0 / Vite 8.3.0 / wrangler 4.135.0）。
+> **最后核对时间**：以当前工作区实际文件为准（React 19.3.0 / Vite 8.3.0 / wrangler 4.149.0）。
 > **工作区根目录**：`E:\codex\个人网站`
 > **站点品牌**：Kensym® ｜ Visual · AI · Brand Designer ｜ 主要受众：品牌方、合作方、招聘方
 > **联系方式**：future0224@126.com ｜ 所在地：Nanjing, China
@@ -23,8 +23,9 @@
 | 内容来源 | 全部**硬编码在源码里**（视频清单）或**由 R2 自动扫描**（照片清单），改内容 = 改代码 / 传 R2 |
 | 域名 | 站点 `kensym15.top`（国内）；Worker `kensym15.dpdns.org`（dpdns 子域，**只有子域在 Worker 上**） |
 | 最大风险 | 改了 `ALLOWED_ORIGINS` 或图片命名规则 → 全线 403/404（详见 §9、§10） |
-| 最该先修 | 站点有 **6 处第三方热链图**（unsplash / picui）+ **字体走 Google Fonts**，国内节点两者都不可达（详见 §6.3、§9.3、§11） |
-| 本次任务边界 | **只产出本文档，未改动任何代码/配置**（清理项已记录，其中「删除类」经用户确认**不做**，见 §11） |
+| 最大遗留改进项 | 站点有 **6 处第三方热链图**（unsplash / picui）+ **字体走 Google Fonts**，国内节点两者都不可达（详见 §6.3、§9.3、§11 第 9–10 条） |
+| 本地开发命令 | `pnpm dev`（前端）+ `pnpm worker:dev:remote`（Worker，**必须带 `--remote`**） |
+| 文档状态 | 本手册在 **2026-10 一轮大改造后重新核对**（COS 私有化+签名、camera 旁挂清单、wrangler 升级、多轮实测更正）。文中带 ⚠️/✅ 的「更正」「已知并接受」段落是**刻意保留的**，不要当成待修缺陷 |
 
 ---
 
@@ -47,21 +48,18 @@ git push origin main
 **执行要点**
 
 - 改完 → **立刻** commit + push，不要攒着等「下次一起提」。
+- ★ **本机 push 必须走代理**（否则 `Failed to connect to github.com:443`）。这是**常规用法，不是应急方案**：
+  ```powershell
+  git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
+  ```
+  原因：`github.com:443` 直连被阻断（DNS 正常解析到真实 IP `20.205.243.166`，但 TCP 连不上），
+  本机代理在 `127.0.0.1:7897`（Clash 默认端口）。端口是**本机环境相关**的，不要写进仓库配置；
+  若变了先探测 `Test-NetConnection 127.0.0.1 -Port 7897 -InformationLevel Quiet`。
 - 一次改动一个 commit，message 写清做了什么（对照仓库既有风格，如 `Serve photo API from custom domain: workers.dev is unreachable in mainland China`）。
 - **push 后确认 CI 结果**：Actions 跑完后，用一次 HTTP 请求核对部署报告 `https://kensym-1331415098.cos.ap-hongkong.myqcloud.com/deploy-report.txt`，看 `status=OK`、`pages_ok=yes`、`assets_cache=3/3`。CI 失败时**不要**当作已完成。
 - 只改了 Worker 代码（`worker/`、`wrangler.toml`）时注意：**站点 CI 不会部署 Worker**，还需要额外执行 `pnpm worker:deploy`（见 §13.5）。两者都要做。
 - 涉及密钥的改动**永远不要**提交（见 §7.4 与 §10「不要做」）。
-
-> ⚠️ **本机 push 常见故障：`Failed to connect to github.com:443`**
-> 这台机器上 `github.com:443` 直连会被阻断（DNS 正常解析到真实 IP `20.205.243.166`，但 TCP 连不上），而本机有代理在 `127.0.0.1:7897`（Clash 默认端口）。绕过方式：
->
-> ```powershell
-> git -c http.proxy=http://127.0.0.1:7897 -c https.proxy=http://127.0.0.1:7897 push origin main
-> ```
->
-> 该代理端口是**本机环境相关**的，不要写进仓库配置。若端口变了，先探测：
-> `Test-NetConnection 127.0.0.1 -Port 7897 -InformationLevel Quiet`
-> 验证推送是否落地不要用 `git ls-remote`（它同样不走代理），加同样的 `-c` 参数即可。
+- 确认推送是否落地时，`git ls-remote` **同样需要带 `-c` 代理参数**，否则会误报连接失败。
 
 ---
 
@@ -83,13 +81,19 @@ E:\codex\个人网站\
 ├── pnpm-workspace.yaml           仅 allowBuilds（esbuild / workerd 允许执行构建脚本）
 ├── pnpm-lock.yaml                锁文件（真实安装版本以此为准）
 ├── .env.example                  环境变量样例（VITE_MEDIA_BASE_URL / VITE_PHOTO_API_BASE_URL）
-├── .gitignore                    忽略 node_modules、dist、.wrangler、.dev.vars、.photo-thumbs
+├── .gitignore                    忽略 node_modules、dist、.wrangler、.dev.vars、.photo-thumbs、.photo-camera.json
 ├── wrangler.toml                 ★ 主 Worker（portfolio-media）配置：R2 / 限速 / 来源白名单 / COS 图床
+├── scripts/
+│   └── build-camera-sidecar.mjs  由本地 EXIF 生成 .photo-camera.json（机身/镜头/年份旁挂清单），见 §5.8
+├── make-photo-assets.cjs         ★ 生成 COS 的缩略图与预览图（需要临时装 sharp），见 §13.3
+├── start-site.ps1                本地起 Vite 并打开浏览器
+├── publish-site.ps1              构建 + git add/commit/push（国内/国外节点由此上线）
+├── push-to-cos.ps1               手动上传 dist 到 COS（CI 不可用时的兜底；注意 §9.5 的 `-rs` 缺陷）
 ├── worker/
 │   ├── README.md                 主 Worker 的部署与内容维护说明（权威，写得很细，值得读）
 │   ├── src/index.js              ★ 主 Worker 全部逻辑：/media 视频代理 + /photo 图片签名与分流 + 页面回源
-│   ├── src/photo-catalog.js      扫描 R2 生成照片清单：assetId、EXIF、尺寸、分类
-│   └── test/                     photo.test.js（293 行）+ photo-catalog.test.js（69 行），node:test
+│   ├── src/photo-catalog.js      扫描 R2 生成照片清单：assetId、EXIF、尺寸、分类、旁挂清单合并
+│   └── test/                     单元测试 + 两个可手动运行的验证脚本（cos-signature / cos-live）
 ├── image-converter/              ★ 独立管理型 Worker（photo-avif-batch）
 │   ├── worker.js                 JPG → AVIF 批量转换，写回 R2
 │   ├── wrangler.toml             绑定 photo 桶 + Cloudflare Images binding
@@ -102,7 +106,9 @@ E:\codex\个人网站\
 │   ├── program.md                历史内容稿（板块/文案/视觉规范来源）
 │   └── design.md                 摄影页的历史需求稿与验收标准
 ├── dist/                         构建产物（已 gitignore，磁盘上存在）
-└── .photo-thumbs/                一次性缩略图工具产物（已 gitignore；含本机绝对路径，勿提交）
+├── .photo-camera.json            机身/镜头/年份旁挂清单本体（已 gitignore，需上传到 R2，见 §5.8）
+├── .photo-thumbs/                缩略图工具产物 + local-map.json（已 gitignore；含本机绝对路径，勿提交）
+└── .dev.vars                     本地密钥（已 gitignore；COS 只读凭据 + PHOTO_SIGNING_SECRET）
 ```
 
 **注意**：`doc/design.md` 中提到的 `worker/wrangler.toml` **并不存在** —— Worker 配置在**项目根目录**的 `wrangler.toml`。这是历史文档漂移，按本手册为准。
@@ -146,7 +152,88 @@ E:\codex\个人网站\
                       └─────────────────────────────────────────┘
 ```
 
-### 2.2 关键设计取舍（为什么长这样）
+### 2.2 图片请求完整链路（★ 最常被问到的「为什么图片走 dpdns.org」）
+
+页面在 `kensym15.top`，图片却从 `kensym15.dpdns.org` 加载 —— **这是有意的，且该域名本身不决定图片来自哪个桶**。完整链路如下：
+
+```
+┌──────────────────────────────────────────────────────────────────────┐
+│ 浏览器：访客在 https://kensym15.top/photography/ 打开摄影页              │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ ① <img src> 指向 dpdns.org
+                            │    硬编码于 src/photography.jsx:12
+                            │    remotePhotoBase = 'https://kensym15.dpdns.org/photo'
+                            │    （生产环境无 VITE_PHOTO_API_BASE_URL 时用它）
+                            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Cloudflare Worker  portfolio-media                                    │
+│ 自定义域名 kensym15.dpdns.org                                          │
+│                                                                       │
+│ ② GET /photo/image/<assetId>?v=<版本>&exp=…&ref=…&sig=…&variant=thumb   │
+│                                                                       │
+│ ③ isTrustedRequest()：Referer/Origin 必须在 ALLOWED_ORIGINS 白名单      │
+│    → 空白 Referer 一律 403                                             │
+│                                                                       │
+│ ④ 校验 HMAC 签名（15 分钟有效）＋ 恒定时间比较                            │
+│    → 过期 / 篡改 / 越权尺寸 / 未知 assetId → 4xx                        │
+│                                                                       │
+│ ⑤ AES-GCM 解密 ref → 还原真实对象路径（浏览器永远看不到 objectKey）        │
+│                                                                       │
+│ ⑥ isChinaNodeRequest()：读【Origin 头】                                │
+│    Origin = https://kensym15.top         → 命中「国内」                 │
+│    Origin = https://shouraisan.github.io → 未命中（走 R2）              │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ 命中国内
+                            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ cosFetch() → 带 COS v5 签名请求（cosAuthorization，HMAC-SHA1，600s）    │
+│   路径用【解码形态】签名，URL 用【编码形态】发出  ← 极易踩的坑，见 §5.7   │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ 腾讯云 COS · 上海 ap-shanghai                                          │
+│ 桶 photo-1331415098   【已私有化，匿名请求 403】                        │
+│ thumbs/<分类>/<文件名>.avif      ← 网格缩略图（保留半角空格）            │
+│ previews/<分类>/<文件名>.avif    ← 灯箱预览 2000px                     │
+│ <分类>/<原图文件名>.JPG          ← 全尺寸 JPG（2–32 MB）                │
+└───────────────────────────┬──────────────────────────────────────────┘
+                            │ 签名校验通过
+                            ▼
+┌──────────────────────────────────────────────────────────────────────┐
+│ Cloudflare 边缘缓存 caches.default（缓存键含 __origin）                 │
+│ 返回 image/avif，**不带 ETag 头** ← 这是「确实走了 COS」的判定依据       │
+└──────────────────────────────────────────────────────────────────────┘
+```
+
+**三个必须澄清的点**
+
+1. **域名只负责把请求送到 Worker，不决定图片来源。** 来源由浏览器自动带的 `Origin` 头决定，也就是「访客在哪个站点的页面上」。
+2. **不能用 `kensym15.top` 作 API 域名。** Worker 的 `routes` 只声明 `kensym15.dpdns.org`；裸域必须留给香港 COS 的静态站，否则页面本身就打不开了（见 §9.1 A1）。
+3. **不能用 `*.workers.dev`。** 它在国内完全不可达 —— 仓库历史里有专门的提交记录此事（`Serve photo API from custom domain: workers.dev is unreachable in mainland China`）。
+
+> 排查技巧：判断某张图到底走了哪一侧，**看响应有没有 `ETag` 头** —— R2 分支会设 `object.httpEtag`，上海 COS 分支不设。用不同 Referer 打同一张图即可对比。缓存会遮蔽真实来源，需要时加一个未被缓存过的查询参数绕过。
+
+### 2.3 三处存储的字段级分工
+
+```
+        R2（Cloudflare）                          COS 上海
+        ────────────────                          ────────
+  桶 photo（★ 唯一主节点）                   桶 photo-1331415098（国内加速镜像）
+  ├─ <分类>/x.JPG          原图             ├─ <分类>/x.JPG          原图（镜像）
+  ├─ thumbs/<分类>/x.avif  缩略图           ├─ thumbs/<分类>/x.avif  缩略图（镜像）
+  ├─ previews/<分类>/x.avif 预览图          ├─ previews/<分类>/x.avif 预览图（镜像）
+  └─ 出口流量免费 ← 原图优先走这里的理由       └─ 外网下行按量计费
+        │                                          ▲
+        │  国外访客（唯一来源，无兜底）              │  国内访客（优先，失败回落 R2）
+        └──────────────► Worker ◄──────────────────┘
+
+  桶 video（私有）
+  └─ 4 个 mp4 ──► Worker /media/* 代理 ──► <video> 播放（支持 Range 206）
+```
+
+**关键约束**：R2 是**唯一主节点**。国外访客即使 R2 未命中，**也不会**去试探上海桶（避免横跨太平洋，宁可返回 404）。只有国内访客才优先上海桶、失败回落 R2。这条规则由测试 `overseas node never falls back to Shanghai COS when R2 misses` 锁定。
+
+### 2.4 关键设计取舍（为什么长这样）
 
 | 决策 | 原因 |
 | --- | --- |
@@ -157,6 +244,11 @@ E:\codex\个人网站\
 | 图片必须走 **Worker 签名路由** | R2 桶保持私有；浏览器永远拿不到 bucket 地址、`objectKey` 或原图直链 |
 | Worker 在 `*.dpdns.org` 子域上 | 它同时是 Worker 路由、媒体域名，且被 `ALLOWED_ORIGINS` 覆盖。**裸域 `kensym15.top` 必须留给 COS 静态站** |
 | Vite 插件 `stripCrossorigin` | 腾讯云 COS 默认不返回 `Access-Control-Allow-Origin`，而 Vite 给产物加的 `crossorigin` 属性会触发 CORS 校验 → 脚本被拒 → 整页（尤其摄影页）全废 |
+| **R2 是唯一主节点**，上海 COS 只是国内镜像 | 国外访客即便 R2 未命中也不试探上海桶（避免横跨太平洋，宁可 404）；只有国内来源才优先上海桶、失败回落 R2 |
+| 上海桶**私有 + Worker 侧 COS v5 签名** | 保留国内加速的同时，让签名模型对两侧同时生效（此前只保护 R2）。代价是 Worker 里多了一把**只读**密钥 |
+| 清单构建**不读图片二进制**（`PHOTO_EXIF_SCAN` 关闭） | 逐张读 512 KB + 解析 EXIF 会撞 Worker CPU 上限（有测试锁定该行为）。需要元数据就走旁挂清单或上传时写 customMetadata |
+| 机身/镜头走 **`_camera.json` 旁挂清单**而非改写 58 个对象 metadata | 旁挂是「一个 10 KB 对象、不改照片、无 CPU 开销」；改写对象需要 S3 凭据且可能要重传 0.4 GB |
+| 内容全硬编码 / 由 R2 自动扫描，**无 CMS** | 站点规模小（3 页 + 58 张图 + 4 个视频），引入后台的复杂度远超收益 |
 
 ---
 
@@ -255,15 +347,26 @@ const object = await env.photo.get(reference.key);              // R2 兜底
 
 > ⚠️ **大小写陷阱**：COS 的 key **大小写敏感**，原图扩展名逐个文件继承原始命名（`_DSC6557.JPG` 大写、`Chenshan_Park-7889.jpg` 小写，同桶内并存）。探测或拼接 COS 原图 key 时若猜错大小写会得到 404，**不要据此认为文件不存在**；同理，高频探测会偶发 `403`，冷却后恢复。
 
-**命名兜底的关键实现（`spaceVariant()`）**
+**命名兜底的关键实现（`spaceVariant()`）** —— ⚠️ **读这段前请先看下方的更正**
 
-「分隔符下划线 → 空格」不能无差别做 `/_/g → ' '`：那样会把 `hobby_figure` 这种**固有下划线**也破坏成 `hobby figure`，永远命中不了（实测 58 张里 26 张属于这种混合命名）。因此只还原「空格→下划线」真正会产生的那些下划线：
+「分隔符下划线 → 空格」不能无差别做 `/_/g → ' '`：那样会把 `hobby_figure` 这种**固有下划线**也破坏成 `hobby figure`，永远命中不了。因此只还原「空格→下划线」真正会产生的那些下划线：
 
 ```js
 const SEPARATOR_UNDERSCORE = /(?<=[\s（(0-9])_|_(?=[\s）)0-9（(])/g;
 ```
 
-该规则已用桶内全部 58 个真实对象名做**双向覆盖验证**（58 × 2 形态 = 116 例）：`thumbCandidates` 与 `originalKeysFor` 均 **116/116 命中**。
+> ⚠️ **更正：`spaceVariant()` 很可能是多余的，且它当初的引入依据是错的。**
+>
+> 用**带签名的 HEAD 请求**逐条核实后的真实规则是：**thumbs / previews 的对象名与 R2 `objectKey` 完全一致**（含空格与大小写，原样保留）：
+>
+> | 原图 key | thumbs key | 结果 |
+> | --- | --- | --- |
+> | `风光/Chenshan_Park-7889.jpg`（下划线形态） | `thumbs/风光/Chenshan_Park-7889.avif` | 206 |
+> | `人像/bocchi (5 - 12).jpg`（空格形态） | `thumbs/人像/bocchi (5 - 12).avif` | 206 |
+>
+> 也就是说**派生规则是恒等映射**，旧代码的第一个候选（"精确名"）本来就能命中。当初之所以认为它必要，是**基于被 PowerShell `锟斤拷` 乱码污染的输出**做的比对 —— 那个数据不可靠，结论站不住。
+>
+> 当前状态：该函数**保留**（良性的：多几个候选，永远不会把正确结果排到后面），但**不应再声称它修复过线上缺陷**。若要精简候选列表，可先删掉 `spaceVariant` 的两个调用点并跑全量测试。
 
 > 💡 **如何验证某张图到底走了哪一侧**（两侧文件字节完全相同，看不出来源）：
 > **看响应头有没有 `ETag`** —— R2 分支会设 `object.httpEtag`，**上海 COS 分支不设**。
@@ -375,17 +478,15 @@ const SEPARATOR_UNDERSCORE = /(?<=[\s（(0-9])_|_(?=[\s）)0-9（(])/g;
 
 补充约束：`assetId` 必须是 36 位十六进制 UUID 形态；`normalizePhotoRequest()` 对 `v` / `exp` / `ref` / `variant` 做正则白名单（`variant` 只允许 `avif` / `thumb` / `preview`）；CORS 永不返回 `*`。
 
-> ⚠️ **实测：上海桶的三层资源（含 JPG 原图）全部可匿名读取。**
-> 上海桶 `photo-1331415098` 的 `thumbs/`、`previews/` 与一级分类目录下的 JPG 原图**均为公开可读**。实测（无签名、无 Referer）：
-> `previews/人像/_DSC6557.avif` → 200（108,482）；`thumbs/人像/_DSC6557.avif` → 200（24,222）；`人像/_DSC6557.JPG` → 200（7,684,428）。
-> 只要猜到命名规则（`<分类>/<原图文件名>` 或 `<thumbs|previews>/<分类>/<名>.avif`），即可**绕过 Worker 签名直接匿名取图，包括单张最大 32 MB 的原图**。
-> 自 §3.3 的「国内原图走上海桶」实现后，原图也更频繁地从这一侧供给，暴露面进一步扩大。
-> 后果：§5.2 第 3 条「浏览器无法推导对象路径」这一保护**对上海侧完全不成立**；防盗链、防枚举、防长期复用**仅对 R2 有效**。
-> 处置选项见 §11 第 14 条 —— 注意选项 (b)/(c) 需要同步改造 Worker 的 COS 请求（当前是无凭据 `fetch`）。
+> ℹ️ **上海桶已私有化（当前状态）**
+> 上海桶 `photo-1331415098` 已从「公有读私有写」改为**私有读写**，且此前为核对命名而临时放行的 `cos:GetBucket` 桶策略已撤回。当前：
+> - 匿名请求任意对象 → **403**（已验证）
+> - Worker 取图走 §5.7 的 COS v5 签名，正常返回 200
+> - 子用户只有 `cos:GetObject` / `cos:HeadObject`，**连列举桶都不行**
 >
-> （排查提醒：高频 HEAD 探测上海桶会偶发返回 `403 Forbidden`，属临时现象，冷却后恢复 200；不要据此判定桶权限。同理，COS key 大小写敏感，猜错扩展名大小写得到的是 404。URL 里的半角空格建议编码为 `%20`。）
-
-**能力边界（必须如实告知用户）**：来源校验 + 短时签名 + 不可猜测 ID 只能降低盗链、枚举与长期复用，**无法阻止用户保存或截屏已经成功显示在浏览器中的图片**。
+> 因此「浏览器无法推导对象路径」这一保护现在**对 R2 与上海桶同时成立**，签名模型闭环。历史上这层保护只对 R2 有效，是本次改造修掉的。
+>
+> 代价与注意：**本地调试若要列举桶内对象，需要临时放行 `cos:GetBucket`，用完撤回**；另外高频 HEAD 探测上海桶会偶发 403，属临时现象，冷却后恢复，不要据此判定桶权限。
 
 **能力边界（必须如实告知用户）**：来源校验 + 短时签名 + 不可猜测 ID 只能降低盗链、枚举与长期复用，**无法阻止用户保存或截屏已经成功显示在浏览器中的图片**。
 
@@ -415,19 +516,30 @@ const SEPARATOR_UNDERSCORE = /(?<=[\s（(0-9])_|_(?=[\s）)0-9（(])/g;
 - 排序：`category` 用 `zh-CN` 局部比较，再按 `title`。
 - 目录缓存 TTL **5 分钟**（模块级变量 `cachedCatalog`，`clearPhotoCatalogCache()` 供测试重置）。
 
-> ⚠️ **EXIF 扫描默认关闭**。只有 `PHOTO_EXIF_SCAN === 'true'` 时才按 512KB 范围读取并 `exifr.parse()`。开启后每张图都要额外读 R2 + 解析，几十张就会撞 Worker CPU 上限（有专门测试验证「跳过 EXIF 以规避 CPU 限制」）。生产建议**上传时写好 customMetadata**。
+> ⚠️ **EXIF 扫描默认关闭**。只有 `PHOTO_EXIF_SCAN === 'true'` 时才按 512KB 范围读取并 `exifr.parse()`。开启后每张图都要额外读 R2 + 解析，几十张就会撞 Worker CPU 上限（有专门测试验证「跳过 EXIF 以规避 CPU 限制」）。**保持关闭是刻意决定，不要为了省事打开它**；需要元数据就走 §5.8 的旁挂清单，或上传时写好 customMetadata。
 >
 > ⚠️ `yearFor` 的 Windows 与 custom.year 分支下限不同：EXIF 走默认 `1990`，custom 走 `1900`。
+
+> ✅ **已知并接受的取舍：58 张的 `width`/`height` 全是兜底值 `4×3`。**
+>
+> 因为 EXIF 扫描关闭 + 对象上没有 `width`/`height` customMetadata，尺寸三层取值全部落空，于是都取兜底。
+>
+> **后果是「裁剪」而非「变形」**：`photography.jsx` 把 `--photo-ratio` 设成 `4 / 3`，而 `.photo-frame img` 用 `object-fit: cover`，所以超出 4:3 的部分被裁掉：
+> - 竖图（真实 4000×5333）在 4:3 框里 → 裁掉约 **44% 宽度**
+> - 横图（真实 8256×5504）→ 裁掉约 5% 高度
+> - 所有照片被统一成 4:3，网格失去原本的横竖节奏
+>
+> **2026-10 已评估并明确决定不修**（用户：「裁剪就裁剪了」）。修复路径是给 58 个 R2 对象补 `width`/`height` customMetadata（走 §5.8 同一套旁挂机制也完全可以）。**接手者请勿把它当 bug 直接改** —— 若要修，先确认这是用户想要的改动。
 
 ### 5.5 文件名匹配与双源取图（最容易踩的坑）
 
 R2 与 COS 两侧的文件名存在**分隔符与前导下划线差异**，代码用「候选键枚举 + 逐个尝试」来兜底：
 
-- `thumbCandidates(objectKey)` 生成 4 组基名：原名、`-`→`_`、`_`→`-`、空格→`_`；每组再衍生原样 / 去前导 `_` / 加前导 `_`，去重后最多 12 个候选。
+- `thumbCandidates(objectKey)` 生成 5 组基名：原名、`-`→`_`、`_`→`-`、空格→`_`、以及 `spaceVariant()` 的「分隔符下划线→空格」；每组再衍生原样 / 去前导 `_` / 加前导 `_`，去重后最多 15 个候选。（**注意**：其中 `spaceVariant` 那一组实测很可能是多余的，见本节末尾的更正。）
 - `imageKeysFor(photo)` 组合：`<prefix>/<分类>/<名>.avif`，分类按 4 个已知值排序（命中分类排第一）；`preview` 变体额外补平铺形式 `<prefix>/<名>.avif`（兼容早期无分类层的上传）。
 - `THUMB_VIEWPORT_THRESHOLD`、`COS_CATEGORIES = ['人像','手办','街头','风光']` 与 `COS_THUMB_PREFIX = 'thumbs'` 是硬编码的，新增分类两边都要改。
 
-**代价**：最坏情况一次请求最多 24 次候选尝试（12 名 × 2 侧），每次都可能是 R2 `get` 或跨网 `fetch`。这是为容错付出的真实成本，排查「某张图 404 / 慢」时先看**文件名是否落在候选集合里**。
+**代价**：最坏情况一次请求最多 30 次候选尝试（15 名 × 2 侧），每次都可能是 R2 `get` 或跨网 `fetch`。这是为容错付出的真实成本，排查「某张图 404 / 慢」时先看**文件名是否落在候选集合里**。
 
 `fetchCosImage()` 用 `AbortSignal.timeout(20_000)`，失败即换下一个候选，整体主源失败后由 `fetchThumb()` 回落到另一侧。
 
@@ -469,6 +581,26 @@ COS_SECRET_KEY=...
 > 注意：不要用 `AKID` 开头的**假值**作测试数据写入仓库 —— GitHub 推送保护会把形如真实 SecretId 的字符串判为密钥并拒绝推送（本项目已踩过一次）。
 
 **回滚**：把上海桶改回「公有读私有写」即刻恢复（匿名路径一直都在）；或 `wrangler secret delete COS_SECRET_ID` / `COS_SECRET_KEY` 退回匿名模式。
+
+### 5.8 机身 / 镜头 / 年份旁挂清单（`_camera.json`）
+
+**问题**：清单构建刻意**不读图片二进制**（见 §5.4），因此 `camera` / `lens` / `year` 只能来自 R2 对象的 `customMetadata`；而桶里现有 58 个对象上**没有**这些字段。结果是灯箱的「机身 / 镜头」一行**永远不显示**。已实测：改造前 58 张的 `camera` 全为空串。
+
+**方案（选 E，未动任何照片）**：在 R2 桶根路径放一个约 10 KB 的 `_camera.json` 旁挂清单，`loadPhotoCatalog()` 读取后合并。
+
+选它而不选「给 58 个对象写 metadata」的原因：后者需要 S3 API 原地 copy（需凭据），若必须重传则是 **0.4 GB**；而旁挂清单是**一个对象、不改照片、无 CPU 开销**。代码里 `listImages()` 本就排除 `_` 开头的 key（为 `_catalog.json` 预留的约定），所以保留对象不会混进照片列表。
+
+**实现要点**（`worker/src/photo-catalog.js`）：
+
+- `loadCameraSidecar()` —— 读 `_camera.json`，5 分钟模块级缓存；**读不到或 JSON 损坏时静默降级**，行为与引入它之前完全一致（有测试覆盖）。
+- 合并**只补空缺，绝不覆盖** R2 对象自身的 `customMetadata` 或 EXIF。所以你以后在上传时写好 metadata，旁挂会自动让位。
+- 匹配**对命名形态不敏感**：规范化大小写、全角括号、`_` / `-` / 空格。这点是必需的 —— 桶里三种分隔符混用（`Chenshan_Park-7889`、`bocchi (5 - 12)`、`hobby_figure（nomark (1 - 26)`）。
+- 年份优先序：`custom.year` → 旁挂 → EXIF 拍摄时间 → 上传年份。
+  > ⚠️ 注意别写成 `yearFor(sidecarYear, modifiedYear, …)` —— 该函数在值解析失败时会**回落到上传年份**，导致旁挂值永远轮不到（实测踩过，测试已锁）。
+
+**数据来源与维护**：`scripts/build-camera-sidecar.mjs` 从**本地原图 EXIF**（经 `.photo-thumbs/local-map.json` 建立与桶内对象名的对应）生成 `.photo-camera.json`，再上传到 R2。新增照片后重跑并重新上传，见 §13.3。
+
+**当前数据**（58 张）：机身 58/58（NIKON Z 8 × 52、SONY ILCE-7 × 4、FUJI SP500 × 2）、镜头 56/58、年份 58/58。缺的 2 张是胶片扫描件，EXIF 里本就没有镜头信息。
 
 ---
 
@@ -551,7 +683,7 @@ COS_SECRET_KEY=...
 | `@vitejs/plugin-react` | 6.1.x | JSX / Fast Refresh |
 | `lucide-react` | 1.47.0 | 图标（`ArrowLeft`/`ChevronLeft`/`Plus`/`X`/`Mail`/`Play` 等） |
 | `exifr` | 7.1.3 | Worker 侧解析 EXIF |
-| `wrangler` | 4.135.0（workerd 1.20260918.1） | Worker 本地开发、dry-run、部署 |
+| `wrangler` | 4.149.0（workerd 1.20261006.1） | Worker 本地开发、dry-run、部署。**必须 ≥4.149.0**，4.135.0 的 workerd 有 `miniflare-email-store` 路径 bug（§9.5 E1） |
 
 ### 7.2 平台服务
 
@@ -574,9 +706,19 @@ pnpm dev                              # Vite 开发服务器（127.0.0.1，含�
 pnpm build                            # vite build → dist/
 pnpm test                             # node --test worker/test/*.test.js
 pnpm worker:check                     # wrangler deploy --dry-run
-pnpm worker:dev                       # wrangler dev --port 8788（代理远端 R2 只读）
+pnpm worker:dev                       # wrangler dev --port 8788（★ 见下方警告，本地 R2 模拟不可用）
+pnpm worker:dev:remote                # wrangler dev --port 8788 --remote（★ 本地开发请用这个）
 pnpm worker:deploy                    # wrangler deploy（部署主 Worker）
 ```
+
+> ⚠️ **本地开发请用 `pnpm worker:dev:remote`。**
+> 默认的 `worker:dev` 使用**本地模拟的空 R2**，而它在这台机器上 `list` 会失败
+> （`R2 error response does not contain the CF-R2-Error header` / `Error: list: Unspecified error (0)`），
+> 表现为 `/photo/manifest` 返回 **500**。`--remote` 连真实 R2，并且会自动读取 `.dev.vars`
+> 里的 `COS_SECRET_ID` / `COS_SECRET_KEY` / `PHOTO_SIGNING_SECRET`。
+>
+> 另注：`wrangler dev` 曾因 workerd 的 `miniflare-email-store` 路径 bug 完全无法启动，
+> 已通过升级 wrangler 修复，详见 §9.5。
 
 图片转换 Worker 需在其目录单独执行：
 
@@ -709,6 +851,15 @@ pnpm worker:deploy
 | D10 | 测试覆盖不均 | `worker/test/` | `photo.test.js`（293 行，覆盖签名/CORS/双源分流/越权/非法路径）+ `photo-catalog.test.js`（69 行）+ `image-converter/test/worker.test.js`。但**视频 `/media/*` 与页面回源逻辑没有测试** |
 | D11 | 空的 `public/assets/` 目录 | `public/` | **0 个文件**，git 未跟踪（`public/` 下仅 `favicon.svg` 被跟踪），源码中无任何引用 —— 某次实验的回滚残留。Vite 会把它当静态目录扫描，可安全删除（本次未动） |
 
+### 9.5 已修复但值得知道（避免重复踩坑）
+
+| # | 曾经的问题 | 根因与修复 |
+| --- | --- | --- |
+| E1 | **`wrangler dev` 完全无法启动**（主 Worker 与任意探针 Worker 都一样） | workerd 报 `CreateDirectory: #5 拒绝访问, path = miniflare-email-store`。该路径是**裸相对名**，而 wrangler 传的是绝对 persist 目录 —— workerd 拼接 email-store 子目录时丢掉了父路径，Windows 下被解析到**盘符根**。`miniflare-email-store` 是**较新版本才引入的 store**（旧的 `.wrangler/state/v3/` 里只有 cache/d1/images/kv/r2/ratelimit），属版本兼容 bug。<br>**修复**：wrangler `4.135.0` → `4.149.0`（workerd `1.20260918.1` → `1.20261006.1`）。若将来回归，先想到这一条。 |
+| E2 | 本地 `/photo/manifest` 返回 **500** | **不是代码问题**：默认 `wrangler dev` 用本地模拟的空 R2，其 `list` 在本机失败（`Error: list: Unspecified error (0)` / 日志 `R2 error response does not contain the CF-R2-Error header`）。<br>**用法**：本地开发用 `pnpm worker:dev:remote`（连真实 R2）。 |
+| E3 | `push-to-cos.ps1` 的上传永远写不进缓存头 | 该脚本用 `coscmd upload -rs`，其中 **`-s`（sync）会按「同名同内容」跳过文件，连 `Cache-Control` 元数据都不更新**。CI（`deploy-cos.yml`）正因这个坑专门去掉了 `-s`，并有一段注释记录此事 —— 但**这个手动兜底脚本没同步修**。<br>**状态**：未修（属脚本改动，需使用者确认）。用它发布过的 `assets/` 可能**没有**长期强缓存头。 |
+| E4 | 测试里出现过伪密钥被 GitHub 拒绝推送 | 测试数据里写了形如真实腾讯云 SecretId 的字符串（`AKID…`），**GitHub 推送保护**判定为密钥并拒绝整个 push。<br>**规则**：测试/示例里**永远不要**用 `AKID` 开头的假值，用 `test-secret-id-…` 这类明显非密钥的字符串。 |
+
 ---
 
 ## 10. 改动边界（安全操作守则）
@@ -774,20 +925,24 @@ pnpm worker:deploy
 **第四批 · 已完成**
 
 13. ✅ **国内节点的 JPG 原图改走上海桶** —— **已实现并测试通过**。
-    - 实现方式：**没有**扩展签名/`ref` 结构。原图路由改为按来源选源（`fetchCosOriginal()` + R2 兜底），COS key 由 `originalKeysFor()` 从 R2 `objectKey` 派生候选（`spaceVariant` 定向还原分隔符下划线）。
+    - 实现方式：**没有**扩展签名/`ref` 结构。原图路由改为按来源选源（`fetchCosOriginal()` + R2 兜底）。
     - 之所以不需要动签名：`ref` 里已经有 R2 `objectKey`，而 COS key 可由它确定性派生 —— 派不出的情况用候选兜底，命中不了再回落 R2，因此不必把两套 key 都塞进签名。
     - 数据侧无需上传：上海桶本来就是三层全量镜像（见 §3.3 的实测表）。
-    - 新增 6 条测试；3 组变异测试确认它们能抓住回归（移除空格变体 → 2 条红；原图分流不区分国内外 → 1 条红；移除兜底 → 1 条红）。测试总数 20 → **26**。
+    - ⚠️ 该条原先声称「`spaceVariant` 修复了 27 张图的缩略图缺陷」，**这个说法已撤回** —— 见 §5.5 的更正。
+14. ✅ **上海桶改私有 + Worker 侧 COS v5 签名（方案 B）** —— **已实现、已上线、已验证**。
+    - `cosAuthorization()` / `cosFetch()` / 只读子用户，详见 §5.7。
+    - 验证：真实桶 8/8（6 类路径 200 + 篡改签名被拒 + 匿名请求 403）；线上国内侧无 `ETag`（= 走 COS）、国外侧有 `ETag`（= 走 R2）。
+    - **签名模型现已闭环**：R2 与上海桶同时受保护，§5.2 宣称的三层保证全部成立。
+15. ✅ **机身/镜头/年份填充（方案 E：旁挂清单）** —— **已实现并上线**。58/58 有 camera、56/58 有 lens，详见 §5.8。
+16. ✅ **`wrangler dev` 修复** —— 升级 wrangler 至 4.149.0，详见 §9.5 E1。
 
 **第五批 · 待决策**
 
-14. **上海桶公开可读的处置**（安全，见 §5.2 实测偏差）。三个选项：
-    - (a) **接受现状**：泄漏的是 800px 缩略图、2000px 预览图与 6–32 MB 的 JPG 原图；而这些图本来就会显示给访客。成本最低。
-    - (b) **关掉公共读**：桶改为私有。**注意这会让国内侧全部失效** —— `fetchCosImage()` / `fetchCosOriginal()` 都是无凭据的普通 `fetch`，私有桶必须改用带 COS 签名的请求（手写 COS v5 签名或引入 SDK）才能继续工作。
-    - (c) **改用 COS 私有 + Worker 侧签名请求**：最彻底但最复杂，工作量最大。
-15. **照片桶内的 `assets/` 残留**（15 个对象）。配 ListBucket 权限后枚举发现：照片桶 `photo-1331415098` 的 `assets/` 前缀下躺着**旧站点构建产物**（`main-*.js`、`jsx-runtime-*.css` 等，hash 与当前构建均不匹配），是早年误传。**不影响照片功能**（`loadPhotoCatalog` 只收 `.jpg/.jpeg`），但白占空间。
+17. **照片桶内的 `assets/` 残留**（15 个对象）。配 ListBucket 权限后枚举发现：照片桶 `photo-1331415098` 的 `assets/` 前缀下躺着**旧站点构建产物**（`main-*.js`、`jsx-runtime-*.css` 等，hash 与当前构建均不匹配），是早年误传。**不影响照片功能**（`loadPhotoCatalog` 只收 `.jpg/.jpeg`），但白占空间。
     另注：桶内每个分类目录与 `thumbs/`、`previews/` 下都有一个 **0 字节目录占位对象**（`人像/`、`thumbs/` 等，COS 控制台建目录时生成），属正常现象，无需处理。
-16. **`local-map.json` 与实际桶命名的差异**（信息，非缺陷）。`.photo-thumbs/local-map.json` 记录的 key 是「空格→下划线」形态（`人像/bocchi_(5_-_12).jpg`），而桶内实测是**保留空格**形态（`bocchi (5 - 12)`）。若日后用它做同步脚本，不要直接当 COS key 用。
+18. **`local-map.json` 的 key 形态**（信息，非缺陷）。它是 `make-photo-assets.cjs` 与 `build-camera-sidecar.mjs` 的命名依据，**不要用它直接当 COS/R2 key 去访问对象** —— 它与桶内实际名字在分隔符/大小写上并不总是一致，那些脚本靠规范化匹配来吸收差异。
+19. **`push-to-cos.ps1` 的 `-rs` 缺陷**（见 §9.5 E3）：手动兜底发布时缓存头写不进去，与 CI 已修好的行为不一致。属脚本改动，**未修，需确认后再动**。
+20. **宽高兜底导致的裁剪**（见 §5.4）：**已评估并明确决定不修**。接手者请勿当 bug 处理。
 
 ---
 
@@ -842,15 +997,22 @@ pnpm dev                  # http://127.0.0.1:5173
 
 - `/` 首页、`/capabilities/` 能力页、`/photography/` 摄影页。
 - 摄影页在 DEV 下走 `/photo`，由 `vite.config.js` 的 `localPhotoApi` 插件处理：
-  1. 先尝试代理到 `http://127.0.0.1:8788`（若你在另一个终端跑了 `pnpm worker:dev`）。
+  1. 先尝试代理到 `http://127.0.0.1:8788`（若你在另一个终端跑了 Worker dev）。
   2. 失败则回落到**内联调用 Worker**，用一次性随机 secret + 空 R2 桩 → 显示 DEMO 清单。
 - 需要看**真实远端 R2 照片**时，另开一个终端：
 
 ```powershell
-pnpm worker:dev --var "PHOTO_SIGNING_SECRET:local-preview-secret"
+pnpm worker:dev:remote     # ★ 用这个：连真实 R2，且自动读取 .dev.vars 里的三个密钥
 ```
 
-- 验证：`pnpm test`、`pnpm build`。真实 JPG 读取必须靠部署后的远端 R2 binding 才能端到端验证。
+> ⚠️ **不要用 `pnpm worker:dev`（不带 `--remote`）来看照片** —— 它用本地模拟的空 R2，
+> 而该 `list` 在本机失败，`/photo/manifest` 会返回 **500**（详见 §9.5 E2）。
+> 若确需本地模式跑起来，必须显式注入签名密钥：
+> `pnpm worker:dev --var "PHOTO_SIGNING_SECRET:local-preview-secret"`。
+
+- 验证：`pnpm test`、`pnpm build`。
+- **本地 `--remote` 模式已可端到端验证**（真实 R2 + 真实 COS 签名），实测 58 张全部返回、
+  camera 58/58。这是改 Worker 后最省事的自查方式。
 
 ### 13.2 新增一个作品视频
 
@@ -864,11 +1026,30 @@ pnpm worker:dev --var "PHOTO_SIGNING_SECRET:local-preview-secret"
 
 1. 按 `分类/文件名.jpg` 上传 JPG 原图到 R2 `photo` 桶（一级目录即页面分类）。**只有 `.jpg`/`.jpeg` 进清单**，且 key 不能以 `_` 开头。
 2. 建议同时写 customMetadata（`title`/`year`/`camera`/`lens`/`description`/`width`/`height`/`focalPoint`）—— 否则在不开启 EXIF 扫描时只能靠文件名推断。
-3. 生成 AVIF 变体：
-   - R2 侧：调 `photo-avif-batch`（带 Bearer token 与 `?prefix=`）。
-   - 上海 COS 侧：把 `thumbs/<分类>/<名>.avif`（约 800px、~41 KB）与 `previews/<分类>/<名>.avif`（2000px、~220 KB）同步上传到桶 `photo-1331415098`。**注意命名一致性**（见 §5.5），命名不一致会触发候选键枚举兜底甚至 404。
-4. `assetId` 与 `version`（ETag）由 Worker 自动派生，无需手动维护；换原图后 URL 自动变化。
-5. 若新增了分类，同步更新 `worker/src/index.js` 的 `COS_CATEGORIES` 并重新部署。
+3. 生成 AVIF 变体（**推荐用现成脚本，不要手搓**）：
+   - 先在本地生成缩略图与预览图：
+     ```powershell
+     pnpm add -D sharp --ignore-workspace-root-check   # 仅本次需要
+     node make-photo-assets.cjs                        # 默认扫 I:\Lr调色导出，可用 LOCAL_ROOT 覆盖
+     pnpm remove sharp                                 # 用完移除
+     ```
+     该脚本以 `.photo-thumbs/upload/` 里的**线上已验证文件名**为命名依据，产出
+     `upload-thumbs/`（800px）与 `upload-previews/`（2000px）。
+     > ⚠️ `.photo-thumbs/upload/` 是命名参考清单，**不能删**（脚本会直接报错退出）。
+   - **R2 侧**：调 `photo-avif-batch`（带 Bearer token 与 `?prefix=`）。
+   - **上海 COS 侧**：把 `upload-thumbs/` 拖到 `thumbs/`、`upload-previews/` 拖到 `previews/`。
+   - 命名必须与 R2 `objectKey` **逐字符一致**（含空格与扩展名大小写）—— 见 §5.5 的更正。
+4. **更新机身/镜头旁挂清单**（否则灯箱的「机身 / 镜头」对新照片为空）：
+   ```powershell
+   node scripts/build-camera-sidecar.mjs        # 由本地 EXIF 重新生成 .photo-camera.json
+   pnpm exec wrangler r2 object put 'photo/_camera.json' --file .photo-camera.json --remote --content-type application/json
+   ```
+   > 前提：`.photo-thumbs/local-map.json` 里有本地原图路径的对应关系（脚本靠它建立映射）。
+   > 详见 §5.8。
+5. `assetId` 与 `version`（ETag）由 Worker 自动派生，无需手动维护；换原图后 URL 自动变化。
+6. 若新增了分类，同步更新 `worker/src/index.js` 的 `COS_CATEGORIES` 并重新部署。
+7. **宽高不会自动填**（见 §5.4 的取舍说明）。如果你希望新照片的比例正确，就在这一步顺便写
+   `width`/`height` customMetadata，或把它一起加进旁挂清单。
 
 ### 13.4 部署站点
 
@@ -902,14 +1083,20 @@ pnpm worker:deploy
 | --- | --- |
 | 摄影页全部 403 + CORS 报错 | `ALLOWED_ORIGINS` 是否缺当前域名变体（裸域/www、`cos.`/`cos-website.`）—— 见 A3 |
 | 摄影页图片全部加载失败（页面能开） | 是否误用了 `*.workers.dev` 域名；国内不可达 —— 见 §4.2 |
-| 某几张图 404 | 文件名是否落在 `thumbCandidates` 候选集合里；COS 侧命名是否与 R2 一致 —— 见 B3、§5.5 |
+| 某几张图 404 | 文件名是否落在 `thumbCandidates` 候选集合里 —— 见 B3、§5.5（注意该节末尾的更正） |
 | 换个域名后本地预览图片全挂 | `vite.config.js` 的 `replaceAll` 正则没跟着改 —— 见 A4 |
 | 视频 404 | `media` Map 与 `main.jsx` 的 `mediaPath` 不同步 —— 见 A6 |
 | 国内访问图片慢 | 请求是否落到 R2（`Origin`/`Referer` 被剥离）—— 见 A2 |
-| 改了照片元信息但不生效 | 目录缓存 5 分钟 TTL —— 见 B1 |
+| **国内图能显示但明显变慢** | ★ **签名凭据失效后的静默回落**：`cosFetch` 失败会回落 R2，**不报错只变慢**。用 `node worker/test/cos-live-verify.mjs` 确认签名是否被 COS 接受；若报 `InvalidAccessKeyId` 说明子用户密钥被删/轮换但 Worker secret 没更新 —— 见 §5.7 |
+| 灯箱不显示「机身 / 镜头」 | `_camera.json` 缺失、格式坏、或 key 对不上 —— 见 §5.8、§9.5 |
+| 改了照片元信息但不生效 | 目录缓存 5 分钟 TTL；旁挂清单同样 5 分钟 —— 见 B1 |
+| **`wrangler dev` 启动即崩（`CreateDirectory ... miniflare-email-store`）** | wrangler 版本过低，必须 ≥4.149.0 —— 见 §9.5 E1 |
+| **本地 `/photo/manifest` 返回 500** | 用了不带 `--remote` 的 `wrangler dev`（本地 R2 模拟的 `list` 在本机失败）—— 见 §9.5 E2 |
 | 部署成功但新页面不可达 | `deploy-cos.yml` 的硬编码自检清单没更新 —— 见 D8 |
 | Actions 报 `Multiple versions of pnpm specified` | `pnpm/action-setup` 里又写了 `version` —— 见 §8.1 |
-| COS 上缓存头为空 | 上传时加了 `-s` —— 见 §8.1 |
+| COS 上缓存头为空 | 上传时加了 `-s` —— 见 §8.1（手动脚本 `push-to-cos.ps1` 仍有此问题，见 §9.5 E3） |
+| `git push` 报 `Failed to connect to github.com:443` | 没走代理 —— 见 §0.1（这是本机的常规用法，不是异常） |
+| push 被 GitHub 拒绝（`GH013` / push protection） | 提交里含形如真实密钥的字符串（`AKID…`），即使是无害的测试假值也会被拦 —— 见 §9.5 E4 |
 
 ---
 
@@ -920,6 +1107,8 @@ pnpm worker:deploy
 | `readme.md`（本文） | 完整交接手册 | **当前权威** |
 | `worker/README.md` | 主 Worker 的部署步骤、内容维护、缓存与安全设计 | **权威**（与代码一致） |
 | `image-converter/README.md` | AVIF 转换 Worker 的部署与触发 | **权威** |
+| `scripts/build-camera-sidecar.mjs` 内注释 | 旁挂清单为什么存在、数据从哪来 | **权威** |
+| `make-photo-assets.cjs` 内注释 | COS 侧命名为何必须以 `.photo-thumbs/upload/` 为准 | **权威** |
 | `doc/program.md` | 站点定位、板块内容、文案与视觉规范来源 | 内容仍有参考价值；「代码实现参考」章节已过时（页面路径已改为目录形式） |
 | `doc/design.md` | 摄影页的历史需求稿与 11 条验收标准 | 需求意图有效；其中的文件路径引用有漂移（§3 提到 `worker/wrangler.toml`） |
 | `src/styles.css` 内注释 | 部分设计决策的原始说明 | 权威 |
@@ -929,8 +1118,16 @@ pnpm worker:deploy
 
 ## 15. 交接后第一步建议
 
-1. 读 §9「已知坑」全表 —— 这是最容易让你改坏线上的一节。
-2. 读 `worker/src/index.js`（454 行，全文注释充分，是理解整条媒体链路的核心）。
+1. 读 §9「已知坑」全表 + **§9.5 已修复但值得知道** —— 这是最容易让你改坏线上或重复踩坑的两节。
+2. 读 `worker/src/index.js`（约 530 行，全文注释充分，是理解整条媒体链路的核心）与 `worker/src/photo-catalog.js`（清单构建 + 旁挂清单合并）。
 3. 读 `worker/README.md` —— 部署与维护细节的权威来源。
-4. 跑一遍 `pnpm install && pnpm test && pnpm build`，确认本地基线是绿的。
+4. 跑一遍基线，确认本地是绿的：
+   ```powershell
+   pnpm install
+   pnpm test                  # 期望 37/37 通过
+   pnpm build                 # 期望 built in ~200ms
+   pnpm worker:dev:remote     # 期望 /photo/manifest 返回 200 且 58 张
+   ```
+   > 需要 `.dev.vars`（COS 只读凭据 + `PHOTO_SIGNING_SECRET`）才能跑最后一条。
 5. 需要动内容 → 按 §13 的 SOP；需要动架构 → 先读 §10 改动边界与 §12 演进路线。
+6. **不要做**：开 `PHOTO_EXIF_SCAN`、用不带 `--remote` 的 `wrangler dev` 看照片、把宽高兜底当 bug 修、给裸域 `kensym15.top` 加 Worker 路由、把 `AKID` 开头的假值写进仓库。以上每条都有对应的事故记录。
