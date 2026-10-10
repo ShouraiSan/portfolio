@@ -432,12 +432,43 @@ R2 与 COS 两侧的文件名存在**分隔符与前导下划线差异**，代�
 `fetchCosImage()` 用 `AbortSignal.timeout(20_000)`，失败即换下一个候选，整体主源失败后由 `fetchThumb()` 回落到另一侧。
 
 ### 5.6 图片转换 Worker（`photo-avif-batch`）
-
 - 独立管理型 Worker，**不参与站点流量**，仅由人工/脚本触发。
 - 鉴权：`Authorization: Bearer <CONVERTER_TOKEN>`（`wrangler secret put CONVERTER_TOKEN`），未配置或错误返回 401/503。
 - 流程：`R2.list(prefix)`（可传 `?prefix=photos/`）→ 命中 `.jpg/.jpeg` → `R2.head(avifKey)` 已存在则 `skipped` → 否则 `env.IMAGES.input(body).output({format:'image/avif', quality:80})` → 写回同路径同名 `.avif`，`Content-Type: image/avif`、`Cache-Control: public, max-age=31536000, immutable`。
 - 单文件失败只记 `error` 并继续，不中断整批；返回 `{prefix, pages, scanned, results, counts}`。
 - **它只写 R2**，不会写上海 COS。上海 COS 上的 `thumbs/`、`previews/` 是另行上传/同步的副本（见 §13 维护 SOP）。
+
+### 5.7 上海 COS 的 v5 请求签名（方案 B）
+
+当上海桶改为**私有**后，Worker 不能再匿名取图，必须带 COS v5 签名。实现位于 `worker/src/index.js`：
+
+- `cosAuthorization()` —— 生成 `Authorization` 头，算法照 [腾讯云请求签名文档](https://cloud.tencent.com/document/product/436/7778) 与官方 Node SDK `getAuth` 逐行实现：
+  `SignKey = HMAC-SHA1(SecretKey, KeyTime)` → `StringToSign = "sha1\n" + KeyTime + "\n" + SHA1(FormatString) + "\n"` → `Signature = HMAC-SHA1(SignKey, StringToSign)`。
+- `cosFetch(env, url)` —— 唯一出口。**配了 `COS_SECRET_ID`/`COS_SECRET_KEY` 就带签名，没配则维持匿名请求**，因此密钥注入是渐进式的，rollout 期间站点不会中断。`fetchCosImage()` / `fetchCosOriginal()` 都经它取图。
+- 有效期 600 秒。
+
+> ⚠️ **签名用的 pathname 必须是「解码形态」** —— 这是本项目最容易出错的一点，而且**只有对真实 COS 发请求才能发现**。
+> 事实依据：服务端在 403 响应里回显它计算的 `FormatString`。对请求路径 `/thumbs/%E4%BA%BA%E5%83%8F/x.avif`，它签名用的是解码后的 `/thumbs/人像/x.avif`。用编码形态签名 → `SignatureDoesNotMatch`；**用解码形态 → 200**。
+> 因此 `cosFetch()` 通过 `signingPathname()` 解码后再签名，而实际请求仍发出编码后的 URL。
+> **单元测试与「官方 SDK 移植比对」都发现不了这一点** —— SDK 的 `pathname` 传入的本来就是未编码的原始 key，照搬其前提会让两边一起错、比对“通过”。
+
+**两个验证工具**（都不进 `pnpm test`）：
+
+| 命令 | 作用 | 需要凭据 |
+| --- | --- | --- |
+| `node worker/test/cos-signature.verify.mjs` | 把官方 SDK 算法原样移植，与我们的实现逐例比对（18 例） | 否 |
+| `node worker/test/cos-live-verify.mjs` | 用 `.dev.vars` 凭据调用**生产实现 `cosFetch()`** 打真实桶，并检查篡改签名被拒、匿名请求是否已被拒 | 是 |
+
+**只读子用户的权限要求（最小权限）**：只需要 `cos:GetObject`（可选 `cos:HeadObject`），**不需要** `cos:GetBucket` —— Worker 是按完整对象键直接 GET，从不列举桶。策略资源写 `qcs::cos:ap-shanghai:uid/<APPID>:photo-1331415098/*`。
+
+**本地凭据**：放项目根目录 `.dev.vars`（已被 `.gitignore` 忽略），`wrangler dev` 会自动读取：
+```
+COS_SECRET_ID=...
+COS_SECRET_KEY=...
+```
+> 注意：不要用 `AKID` 开头的**假值**作测试数据写入仓库 —— GitHub 推送保护会把形如真实 SecretId 的字符串判为密钥并拒绝推送（本项目已踩过一次）。
+
+**回滚**：把上海桶改回「公有读私有写」即刻恢复（匿名路径一直都在）；或 `wrangler secret delete COS_SECRET_ID` / `COS_SECRET_KEY` 退回匿名模式。
 
 ---
 
@@ -565,6 +596,8 @@ pnpm exec wrangler deploy --config wrangler.toml
 | `COS_THUMB_HOST` | `wrangler.toml [vars]` | 上海 COS **默认端点**（非 cos-website） | 否 |
 | `COS_THUMB_PREFIX` | `wrangler.toml [vars]` | `thumbs` | 否 |
 | `PHOTO_SIGNING_SECRET` | Worker secret | ★ HMAC 签名 + AES-GCM 引用密钥（≥32 字节） | **是** |
+| `COS_SECRET_ID` | Worker secret | ★ 腾讯云**只读子用户** SecretId，用于 COS v5 签名（见 §5.7） | **是** |
+| `COS_SECRET_KEY` | Worker secret | ★ 同上，子用户 SecretKey | **是** |
 | `PHOTO_ASSET_ID_SECRET` | Worker secret（可选） | 覆盖 assetId 派生密钥，未设则回落签名密钥 | **是** |
 | `PHOTO_EXIF_SCAN` | Worker var（可选） | `'true'` 才启用 EXIF 扫描 | 否 |
 | `PHOTO_PUBLIC_ORIGIN` | Worker var（可选） | 覆盖 manifest 里签名 URL 的基址，未设则用请求 host | 否 |
