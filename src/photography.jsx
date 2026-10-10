@@ -10,14 +10,23 @@ import './styles.css';
 const remotePhotoBase = 'https://kensym15.dpdns.org/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
-function Picture({ photo, mode, onLoad, onError }) {
+function Picture({ photo, mode, onLoad, onError, stagger = 0 }) {
   const isThumbnail = mode === 'thumbnail';
   const [usingOriginalFallback, setUsingOriginalFallback] = useState(false);
+  // 图片加载完成后才播放入场动画（配合 styles.css 的 photo-media-in）
+  const [isLoaded, setIsLoaded] = useState(false);
   const thumbnailUrl = photo.thumbnail?.url;
   const originalUrl = photo.original?.url || photo.images?.[mode]?.jpeg?.at(-1)?.url;
   const url = isThumbnail && !usingOriginalFallback ? (thumbnailUrl || originalUrl) : originalUrl;
   useEffect(() => setUsingOriginalFallback(false), [photo.assetId, thumbnailUrl, mode]);
+  // 图片源变化时重置，让回落原图或切换分类后能重新播放动画
+  useEffect(() => setIsLoaded(false), [photo.assetId, url, mode]);
   if (!url) return null;
+
+  // 同一行的三张依次延迟 0 / 70 / 140ms，形成波浪感；封顶 3 避免长列表等待。
+  // 只有网格缩略图播加入场动画，灯箱保持立即显示。
+  const delayStep = Math.min(Math.max(stagger, 0), 3);
+  const animate = isThumbnail;
 
   return <picture>
     <img
@@ -26,8 +35,14 @@ function Picture({ photo, mode, onLoad, onError }) {
       loading={mode === 'thumbnail' && photo.priority ? 'eager' : mode === 'thumbnail' ? 'lazy' : 'eager'}
       fetchPriority={mode === 'thumbnail' && photo.priority ? 'high' : 'auto'}
       draggable="false"
+      className={animate && isLoaded ? 'is-loaded' : undefined}
+      data-stagger={animate && delayStep > 0 ? '1' : undefined}
+      style={animate && delayStep > 0 ? { animationDelay: `${delayStep * 70}ms` } : undefined}
       onContextMenu={(event) => event.preventDefault()}
-      onLoad={onLoad}
+      onLoad={(event) => {
+        if (animate) setIsLoaded(true);
+        onLoad?.(event);
+      }}
       onError={(event) => {
         if (isThumbnail && thumbnailUrl && !usingOriginalFallback && originalUrl) setUsingOriginalFallback(true);
         else onError?.(event);
@@ -338,7 +353,7 @@ function Photography() {
         {visiblePhotos.map((photo, index) => <article className="photo-card" key={photo.assetId} style={{ '--photo-ratio': `${photo.width} / ${photo.height}` }}>
           <button type="button" onClick={(event) => openPhoto(photo, event.currentTarget)} aria-label={`查看 ${photo.title}`}>
             <div className="photo-frame">
-              {photo.pending ? <PendingArtwork index={index}/> : <Picture photo={{ ...photo, priority: index < 3 }} mode="thumbnail"/>}
+              {photo.pending ? <PendingArtwork index={index}/> : <Picture photo={{ ...photo, priority: index < 3 }} mode="thumbnail" stagger={index % 3}/>}
               <div className="photo-hover"><span>VIEW</span><strong>{photo.title}</strong><small>{photo.year}</small></div>
             </div>
             <div className="photo-mobile-meta"><div><span>{photo.title}</span><small>{photo.category}</small></div><small>{photo.year}</small></div>
