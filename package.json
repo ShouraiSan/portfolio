@@ -7,10 +7,11 @@
     "test": "node --test worker/test/*.test.js",
     "worker:check": "wrangler deploy --dry-run",
     "worker:dev": "wrangler dev --port 8788",
+    "worker:dev:remote": "wrangler dev --port 8788 --remote",
     "worker:deploy": "wrangler deploy"
   },
   "devDependencies": {
-    "wrangler": "^4.135.0"
+    "wrangler": "^4.149.0"
   },
   "dependencies": {
     "@vitejs/plugin-react": "latest",
