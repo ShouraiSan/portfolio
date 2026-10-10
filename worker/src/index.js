@@ -139,7 +139,7 @@ export function normalizePhotoRequest(searchParams) {
   const variant = searchParams.get('variant') || '';
   if (!/^[A-Za-z0-9._-]{1,40}$/.test(value.version) || !Number.isSafeInteger(value.exp)
     || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)
-    || (variant && variant !== 'avif' && variant !== 'thumb')) return null;
+    || (variant && variant !== 'avif' && variant !== 'thumb' && variant !== 'preview')) return null;
   if (variant) value.variant = variant;
   return value;
 }
@@ -176,21 +176,33 @@ function encodePath(key) {
     .join('/');
 }
 
-function thumbKeysFor(photo) {
-  const prefix = String(photo.prefix || 'thumbs').replace(/^\/+|\/+$/g, '');
+// 缩略图与预览图的对象键。
+// 两者的目录结构不同，请注意：
+//   thumbs/   缩略图 800px  -> thumbs/<分类>/<文件名>.avif
+//   previews/ 预览图 2000px -> previews/<文件名>.avif   （平铺，无分类层，桶里就是这么放的）
+// R2 与 COS 的文件名只有分隔符与前导下划线这几处差异，因此按变体逐个尝试。
+function imageKeysFor(photo) {
+  const variant = photo.variant === 'preview' ? 'preview' : 'thumb';
+  const defaultPrefix = variant === 'preview' ? 'previews' : 'thumbs';
+  const prefix = String(photo.prefix || defaultPrefix).replace(/^\/+|\/+$/g, '');
+  const flat = variant === 'preview';
   const category = String(photo.category || '');
-  const categories = COS_CATEGORIES.includes(category) ? [category] : COS_CATEGORIES;
+  const categories = flat
+    ? ['']
+    : (COS_CATEGORIES.includes(category) ? [category] : COS_CATEGORIES);
   const keys = [];
   for (const cat of categories) {
-    for (const name of thumbCandidates(photo.objectKey)) keys.push(`${prefix}/${cat}/${name}.avif`);
+    for (const name of thumbCandidates(photo.objectKey)) {
+      keys.push(cat ? `${prefix}/${cat}/${name}.avif` : `${prefix}/${name}.avif`);
+    }
   }
   return keys;
 }
 
-// 从 R2 读取缩略图（国外节点走这里：Global CDN 到 R2 更快）
-async function fetchR2Thumb(env, photo) {
+// 从 R2 读取图片资源（国外节点走这里：Global CDN 到 R2 更快）
+async function fetchR2Image(env, photo) {
   if (!env.photo?.get) return null;
-  for (const key of thumbKeysFor(photo)) {
+  for (const key of imageKeysFor(photo)) {
     try {
       const object = await env.photo.get(key);
       if (object) return { body: object.body, size: object.size, etag: object.httpEtag };
@@ -201,11 +213,11 @@ async function fetchR2Thumb(env, photo) {
   return null;
 }
 
-// 从上海 COS 读取缩略图（国内节点走这里：免跨境）
-async function fetchCosThumb(env, photo) {
+// 从上海 COS 读取图片资源（国内节点走这里：免跨境）
+async function fetchCosImage(env, photo) {
   const host = String(env.COS_THUMB_HOST || '').replace(/\/+$/, '');
   if (!host) return null;
-  for (const key of thumbKeysFor(photo)) {
+  for (const key of imageKeysFor(photo)) {
     try {
       const response = await fetch(`${host}/${encodePath(key)}`, {
         method: 'GET',
@@ -229,10 +241,12 @@ export function isChinaNodeRequest(request) {
     || /^https?:\/\/(127\.0\.0\.1|localhost)(:\d+)?$/i.test(origin);
 }
 
+// 按来源选源（国内 -> 上海 COS，国外 -> R2），任一侧失败自动回落到另一侧。
+// photo.variant 决定取缩略图（thumbs/）还是预览图（previews/）。
 export async function fetchThumb(request, env, photo) {
   const prefersCos = isChinaNodeRequest(request);
-  const primary = prefersCos ? fetchCosThumb : fetchR2Thumb;
-  const fallback = prefersCos ? fetchR2Thumb : fetchCosThumb;
+  const primary = prefersCos ? fetchCosImage : fetchR2Image;
+  const fallback = prefersCos ? fetchR2Image : fetchCosImage;
   return (await primary(env, photo)) || (await fallback(env, photo));
 }
 
@@ -282,6 +296,12 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
   const thumbRef = await createPhotoReference(photo, secret, thumbKey);
   const thumbSignature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref: thumbRef, variant: 'thumb' }, secret);
   result.thumbnail = { url: signedImageUrl(baseUrl, photo, exp, thumbRef, thumbSignature, 'thumb') };
+  // preview（灯箱预览图 2000px，约 220 KB）：灯箱默认显示它，取代原先直接拉 13.5 MB 原图。
+  // 与缩略图同一套分流逻辑，区别只在 COS 侧目录为平铺的 previews/。
+  const previewKey = `preview:${photo.category}/${String(photo.objectKey || '').split('/').at(-1)}`;
+  const previewRef = await createPhotoReference(photo, secret, previewKey);
+  const previewSignature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref: previewRef, variant: 'preview' }, secret);
+  result.preview = { url: signedImageUrl(baseUrl, photo, exp, previewRef, previewSignature, 'preview') };
   // Retain the old response shape for already-deployed clients during rollout.
   const legacyEntry = { width: 2400, url };
   result.images = {
@@ -308,15 +328,20 @@ async function handlePhotoImage(request, env, cors, assetId) {
   if (!await verifyPhotoSignature(assetId, photoRequest, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
   const reference = await readPhotoReference(photoRequest.ref, env.PHOTO_SIGNING_SECRET);
   const isThumb = photoRequest.variant === 'thumb';
+  const isPreview = photoRequest.variant === 'preview';
   const isAvif = photoRequest.variant === 'avif';
-  // thumb 变体的 ref 里放的是逻辑键 "thumb:<分类>/<R2 文件名>"，仅用于签名绑定与推导源对象键。
-  const isThumbRef = Boolean(reference && String(reference.key).startsWith('thumb:'));
+  // thumb / preview 变体的 ref 里放的是逻辑键 "<thumb|preview>:<分类>/<R2 文件名>"，
+  // 仅用于签名绑定与推导源对象键。
+  const refKey = reference ? String(reference.key) : '';
+  const isThumbRef = refKey.startsWith('thumb:');
+  const isPreviewRef = refKey.startsWith('preview:');
   if (!reference || reference.version !== photoRequest.version) {
     return jsonResponse({ error: 'Image not found' }, 404, cors);
   }
-  if (isThumb) {
-    if (!isThumbRef) return jsonResponse({ error: 'Image not found' }, 404, cors);
-  } else if (isThumbRef || (isAvif ? !/\.avif$/i.test(reference.key) : !/\.jpe?g$/i.test(reference.key))) {
+  if (isThumb || isPreview) {
+    const expected = isPreview ? isPreviewRef : isThumbRef;
+    if (!expected) return jsonResponse({ error: 'Image not found' }, 404, cors);
+  } else if (isThumbRef || isPreviewRef || (isAvif ? !/\.avif$/i.test(reference.key) : !/\.jpe?g$/i.test(reference.key))) {
     return jsonResponse({ error: 'Image not found' }, 404, cors);
   }
 
@@ -330,13 +355,15 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const cached = cache ? await cache.match(cacheKey) : null;
   if (cached) return request.method === 'HEAD' ? new Response(null, cached) : cached;
 
-  // 网格缩略图：按来源选源（国内 -> 上海 COS，国外 -> R2），任一侧失败自动回落
-  if (isThumb) {
-    const logicalKey = String(reference.key).slice('thumb:'.length);
+  // 缩略图 / 预览图：按来源选源（国内 -> 上海 COS，国外 -> R2），任一侧失败自动回落
+  if (isThumb || isPreview) {
+    const marker = isPreview ? 'preview:' : 'thumb:';
+    const variant = isPreview ? 'preview' : 'thumb';
+    const logicalKey = String(reference.key).slice(marker.length);
     const slash = logicalKey.indexOf('/');
     const photo = slash > 0
-      ? { category: logicalKey.slice(0, slash), objectKey: logicalKey.slice(slash + 1), prefix: env.COS_THUMB_PREFIX || 'thumbs' }
-      : { category: '', objectKey: logicalKey, prefix: env.COS_THUMB_PREFIX || 'thumbs' };
+      ? { category: logicalKey.slice(0, slash), objectKey: logicalKey.slice(slash + 1), variant }
+      : { category: '', objectKey: logicalKey, variant };
     const thumb = await fetchThumb(request, env, photo);
     if (!thumb) return jsonResponse({ error: 'Image not found' }, 404, cors);
     const headers = photoHeaders(cors);

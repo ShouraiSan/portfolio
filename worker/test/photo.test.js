@@ -84,15 +84,72 @@ const originalObject = {
 const cosThumbObject = {
   key: 'thumbs/风光/original.avif', size: 3, httpEtag: '"etag-cos"', body: new Uint8Array([5, 6, 7]),
 };
+// 预览图在 COS 侧是「平铺」结构：previews/<文件名>.avif，没有分类目录
+const cosPreviewObject = {
+  key: 'previews/original.avif', size: 6, httpEtag: '"etag-preview"', body: new Uint8Array([8, 9, 10, 11]),
+};
 
-// R2 侧同时提供原图与 thumbs/ 下的缩略图
+// R2 侧同时提供原图、thumbs/ 缩略图、previews/ 预览图
 function thumbBucket() {
   return {
     list: async () => ({ objects: [originalObject], truncated: false }),
     get: async (key) => key === originalObject.key ? originalObject
-      : key === cosThumbObject.key ? cosThumbObject : null,
+      : key === cosThumbObject.key ? cosThumbObject
+        : key === cosPreviewObject.key ? cosPreviewObject : null,
   };
 }
+
+test('manifest exposes a signed preview url for the lightbox', async () => {
+  clearPhotoCatalogCache();
+  const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com' };
+  const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+  const res = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+  const photo = (await res.json()).photos[0];
+  assert.match(photo.preview.url, /variant=preview/);
+  // 原图仍然不带 variant（走 R2）
+  assert.equal(new URL(photo.original.url).searchParams.has('variant'), false);
+  // 缩略图与预览图是两条不同的签名地址
+  assert.notEqual(photo.preview.url, photo.thumbnail.url);
+  clearPhotoCatalogCache();
+});
+
+test('preview requests resolve to the flat previews/ prefix on COS', async () => {
+  clearPhotoCatalogCache();
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    requested.push(typeof input === 'string' ? input : input.url);
+    return new Response(cosPreviewObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com' };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const res = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await res.json()).photos[0];
+    const image = await worker.fetch(new Request(photo.preview.url, { headers }), directEnv);
+    assert.equal(image.status, 200);
+    assert.equal(image.headers.get('content-type'), 'image/avif');
+    assert.deepEqual(new Uint8Array(await image.arrayBuffer()), cosPreviewObject.body);
+    // 必须是平铺路径 previews/<name>.avif，不能带分类目录
+    assert.equal(requested.length > 0, true);
+    assert.match(requested[0], /^https:\/\/cos\.example\.com\/previews\//);
+    assert.equal(/\/previews\/[^/]+\//.test(requested[0]), false);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('preview requests still require a valid signature', async () => {
+  clearPhotoCatalogCache();
+  const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com' };
+  const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
+  const previewUrl = new URL((await manifestResponse.json()).photos[0].preview.url);
+  previewUrl.searchParams.set('sig', `${previewUrl.searchParams.get('sig')}x`);
+  const denied = await worker.fetch(new Request(previewUrl.toString(), { headers: trustedHeaders }), directEnv);
+  assert.equal(denied.status, 403);
+  clearPhotoCatalogCache();
+});
 
 test('China node (kensym15.top) loads grid thumbnails from Shanghai COS', async () => {
   clearPhotoCatalogCache();

@@ -1,5 +1,7 @@
 import React, { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { ArrowLeft, ChevronLeft, ChevronRight, Maximize2, Minus, Plus, RotateCcw, X } from 'lucide-react';
+// 注意：Image 必须别名导入 —— 本文件里用 new Image() 做图片预取，
+// 若把 lucide 的 Image 直接引入会遮蔽全局构造函数。
+import { ArrowLeft, ChevronLeft, ChevronRight, Download, Image as ImageIcon, Maximize2, Minimize2, Minus, Plus, RotateCcw, X } from 'lucide-react';
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
@@ -102,6 +104,10 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
   const [status, setStatus] = useState(photo.pending ? 'pending' : 'loading');
   const [retryKey, setRetryKey] = useState(0);
   const [view, setView] = useState(viewRef.current);
+  // 灯箱默认显示 2000px 预览图（约 220 KB，秒开），原图（约 13.5 MB，存在 R2）只在需要时再加载。
+  // showOriginal 控制当前渲染哪一张；originalReady 表示原图已下载完成，可无闪烁切换。
+  const [showOriginal, setShowOriginal] = useState(false);
+  const [originalReady, setOriginalReady] = useState(false);
 
   const commitView = useCallback((next) => {
     const stage = stageRef.current;
@@ -182,12 +188,32 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
     return () => window.removeEventListener('resize', keepInBounds);
   }, [commitView]);
 
+  // 相邻图预取：只预取预览图（约 220 KB），不再预取 13.5 MB 的原图。
+  // 原先预取原图会让「点开一张」实际下载约 27 MB，是流量的主要来源。
   useEffect(() => {
-    if (status !== 'ready' || photos.length < 2) return;
+    if (status === 'pending' || photos.length < 2) return;
     const neighbor = photos[(index + 1) % photos.length];
-    const url = neighbor.original?.url || neighbor.images?.lightbox?.jpeg?.at(-1)?.url;
+    const url = neighbor.preview?.url;
     if (url) new Image().src = url;
   }, [index, photos, status]);
+
+  // 预览图就绪后，在后台顺带把原图拉下来，这样点「查看原图」时能瞬间切换、不闪空白。
+  // 原图来自 R2（出口流量不计费），但体积大，因此只在预览图已经显示之后才发起。
+  useEffect(() => {
+    setShowOriginal(false);
+    setOriginalReady(false);
+  }, [photo.assetId]);
+
+  useEffect(() => {
+    if (status !== 'ready' || showOriginal) return undefined;
+    const url = photo.original?.url;
+    if (!url) return undefined;
+    let cancelled = false;
+    const img = new Image();
+    img.onload = () => { if (!cancelled) setOriginalReady(true); };
+    img.src = url;
+    return () => { cancelled = true; };
+  }, [photo.assetId, photo.original?.url, status, showOriginal]);
 
   const previous = () => onChange((current) => (current - 1 + photos.length) % photos.length);
   const next = () => onChange((current) => (current + 1) % photos.length);
@@ -250,6 +276,14 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
         <output aria-live="polite" aria-label="当前缩放比例">{Math.round(view.scale * 100)}%</output>
         <button type="button" onClick={() => zoomTo(view.scale + .5)} disabled={status !== 'ready' || view.scale >= 4} aria-label="放大图片" title="放大"><Plus/></button>
         <button type="button" onClick={resetView} disabled={status !== 'ready' || view.scale === 1} aria-label="恢复适应窗口" title="适应窗口"><Maximize2/></button>
+        {/* 预览图 → 原图切换。只在「显示的是预览图」且预览图已就绪时出现；
+            原图已下载完成时按钮文案变为「显示原图」并直接切换，不再触发加载。 */}
+        {!showOriginal && status === 'ready' && photo.original?.url && (
+          <button type="button" onClick={() => setShowOriginal(true)} aria-label="查看原图" title="查看原图">
+            {originalReady ? <><ImageIcon size={16}/><span className="photo-original-label">原图</span></> : <><Download size={16}/><span className="photo-original-label">查看原图</span></>}
+          </button>
+        )}
+        {showOriginal && <button type="button" onClick={() => setShowOriginal(false)} aria-label="返回预览图" title="返回预览图"><Minimize2 size={16}/><span className="photo-original-label">预览</span></button>}
         <span aria-hidden="true"/>
         <button ref={closeRef} type="button" onClick={onClose} aria-label="关闭灯箱" title="关闭"><X/></button>
       </div>
@@ -257,7 +291,7 @@ function Lightbox({ photos, index, onChange, onClose, triggerRef }) {
     <button className="photo-lightbox-nav photo-lightbox-prev" type="button" onClick={previous} aria-label="上一张" title="上一张"><ChevronLeft/></button>
     <div ref={stageRef} className={`photo-lightbox-stage${view.scale > 1 ? ' is-zoomed' : ''}`} onWheel={onWheel} onPointerDown={onPointerDown} onPointerMove={onPointerMove} onPointerUp={endPointer} onPointerCancel={endPointer} onDoubleClick={(event) => zoomTo(view.scale > 1 ? 1 : 2, event.clientX, event.clientY)}>
       {!photo.pending && <div className="photo-zoom-surface" style={{ '--photo-scale': view.scale, '--photo-x': `${view.x}px`, '--photo-y': `${view.y}px` }}>
-        <Picture key={`${photo.assetId}-${retryKey}`} photo={photo} mode="lightbox" onLoad={(event) => { imageRef.current = event.currentTarget; setStatus('ready'); resetView(); }} onError={() => setStatus('error')}/>
+        <Picture key={`${photo.assetId}-${retryKey}-${showOriginal ? 'original' : 'preview'}`} photo={photo} mode={showOriginal ? 'lightbox' : 'preview'} onLoad={(event) => { imageRef.current = event.currentTarget; setStatus('ready'); resetView(); }} onError={() => setStatus('error')}/>
       </div>}
       {status === 'loading' && <div className="photo-image-state" role="status">LOADING IMAGE</div>}
       {status === 'pending' && <div className="photo-image-state photo-image-pending"><strong>IMAGE PENDING</strong><span>该 DEMO 记录尚未连接 R2 原图</span></div>}
