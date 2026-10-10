@@ -139,9 +139,61 @@ export function normalizePhotoRequest(searchParams) {
   const variant = searchParams.get('variant') || '';
   if (!/^[A-Za-z0-9._-]{1,40}$/.test(value.version) || !Number.isSafeInteger(value.exp)
     || !/^[A-Za-z0-9_-]{20,1024}$/.test(value.ref)
-    || (variant && variant !== 'avif')) return null;
+    || (variant && variant !== 'avif' && variant !== 'thumb')) return null;
   if (variant) value.variant = variant;
   return value;
+}
+
+// 摄影页网格缩略图的 COS 对象键。
+// 必须用 R2 对象键（objectKey）而不是 title：title 由 filenameTitle() 生成，
+// 其中 /[_-]+/g 会被替换成空格，连字符与下划线信息已丢失
+// （例如 "bocchi (5 - 12)" 会变成 "bocchi (5   12)"），无法还原 COS 文件名。
+// R2 与 COS 的文件名只有分隔符与前导下划线这两处差异，因此按变体逐个尝试。
+const COS_CATEGORIES = ['人像', '手办', '街头', '风光'];
+
+function cosThumbCandidates(objectKey) {
+  const filename = String(objectKey || '').split('/').at(-1).replace(/\.[^.]+$/, '');
+  let decoded = filename;
+  try { decoded = decodeURIComponent(filename); } catch { /* 保留原样 */ }
+  const bases = [
+    decoded,
+    decoded.replace(/-/g, '_'),
+    decoded.replace(/_/g, '-'),
+  ];
+  const candidates = [];
+  for (const base of bases) {
+    candidates.push(base);
+    candidates.push(base.replace(/^_+/, ''));
+    candidates.push(`_${base.replace(/^_+/, '')}`);
+  }
+  return [...new Set(candidates.filter(Boolean))];
+}
+
+function cosPathFor(key) {
+  return String(key || '')
+    .split('/')
+    .map((segment) => encodeURIComponent(segment))
+    .join('/');
+}
+
+async function fetchCosThumb(env, photo) {
+  const host = String(env.COS_THUMB_HOST || '').replace(/\/+$/, '');
+  if (!host) return null;
+  const prefix = String(env.COS_THUMB_PREFIX || 'thumbs').replace(/^\/+|\/+$/g, '');
+  const category = String(photo.category || '');
+  const categories = COS_CATEGORIES.includes(category) ? [category] : COS_CATEGORIES;
+  for (const cat of categories) {
+    for (const name of cosThumbCandidates(photo.objectKey)) {
+      const url = `${host}/${cosPathFor(`${prefix}/${cat}/${name}.avif`)}`;
+      try {
+        const response = await fetch(url, { method: 'GET', signal: AbortSignal.timeout(20_000) });
+        if (response.ok && response.body) return response;
+      } catch {
+        // 网络异常时继续尝试下一个候选
+      }
+    }
+  }
+  return null;
 }
 
 export async function createPhotoSignature(assetId, variant, secret) {
@@ -179,14 +231,18 @@ async function publicPhoto(photo, baseUrl, exp, secret) {
     width: photo.width, height: photo.height, focalPoint: photo.focalPoint, pending: photo.pending,
   };
   if (photo.pending) return result;
+  // original（灯箱大图）：仍从 R2 读取，流量免费。ref 加密的是 R2 对象键。
   const ref = await createPhotoReference(photo, secret);
   const signature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref }, secret);
   const url = signedImageUrl(baseUrl, photo, exp, ref, signature);
   result.original = { url };
-  const avifKey = avifKeyFor(photo.objectKey);
-  const avifRef = await createPhotoReference(photo, secret, avifKey);
-  const avifSignature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref: avifRef, variant: 'avif' }, secret);
-  result.thumbnail = { url: signedImageUrl(baseUrl, photo, exp, avifRef, avifSignature, 'avif') };
+  // thumbnail（网格小图）：改为从上海 COS 读取，体积约 40 KB/张。
+  // 同样经过签名校验，直连 COS 无法绕过；ref 里放的是可推导的 COS 逻辑键。
+  // 用 objectKey 而非 title —— title 已被清洗，丢失了连字符/下划线信息。
+  const thumbKey = `cos-thumb:${photo.category}/${String(photo.objectKey || '').split('/').at(-1)}`;
+  const thumbRef = await createPhotoReference(photo, secret, thumbKey);
+  const thumbSignature = await createPhotoSignature(photo.assetId, { version: photo.version, exp, ref: thumbRef, variant: 'thumb' }, secret);
+  result.thumbnail = { url: signedImageUrl(baseUrl, photo, exp, thumbRef, thumbSignature, 'thumb') };
   // Retain the old response shape for already-deployed clients during rollout.
   const legacyEntry = { width: 2400, url };
   result.images = {
@@ -212,12 +268,19 @@ async function handlePhotoImage(request, env, cors, assetId) {
   if (!photoRequest || !/^[0-9a-f-]{36}$/i.test(assetId)) return jsonResponse({ error: 'Invalid image request' }, 400, cors);
   if (!await verifyPhotoSignature(assetId, photoRequest, url.searchParams.get('sig'), env.PHOTO_SIGNING_SECRET)) return jsonResponse({ error: 'Invalid or expired image request' }, 403, cors);
   const reference = await readPhotoReference(photoRequest.ref, env.PHOTO_SIGNING_SECRET);
+  const isThumb = photoRequest.variant === 'thumb';
   const isAvif = photoRequest.variant === 'avif';
-  if (!reference || reference.version !== photoRequest.version
-    || (isAvif ? !/\.avif$/i.test(reference.key) : !/\.jpe?g$/i.test(reference.key))) {
+  // thumb 变体的 ref 里放的是 COS 逻辑键，格式为 "cos-thumb:<分类>/<标题>.avif"，
+  // 仅用于签名绑定，不参与 R2 对象名校验。
+  const isCosThumbRef = Boolean(reference && String(reference.key).startsWith('cos-thumb:'));
+  if (!reference || reference.version !== photoRequest.version) {
     return jsonResponse({ error: 'Image not found' }, 404, cors);
   }
-  if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
+  if (isThumb) {
+    if (!isCosThumbRef) return jsonResponse({ error: 'Image not found' }, 404, cors);
+  } else if (isCosThumbRef || (isAvif ? !/\.avif$/i.test(reference.key) : !/\.jpe?g$/i.test(reference.key))) {
+    return jsonResponse({ error: 'Image not found' }, 404, cors);
+  }
 
   const canonicalUrl = new URL(url);
   canonicalUrl.searchParams.delete('sig');
@@ -229,6 +292,28 @@ async function handlePhotoImage(request, env, cors, assetId) {
   const cached = cache ? await cache.match(cacheKey) : null;
   if (cached) return request.method === 'HEAD' ? new Response(null, cached) : cached;
 
+  // 网格缩略图：从上海 COS 读取（ref 中的 "cos-thumb:<分类>/<R2 文件名>"）
+  if (isThumb) {
+    const logicalKey = String(reference.key).slice('cos-thumb:'.length);
+    const slash = logicalKey.indexOf('/');
+    const photo = slash > 0
+      ? { category: logicalKey.slice(0, slash), objectKey: logicalKey.slice(slash + 1) }
+      : { category: '', objectKey: logicalKey };
+    const upstream = await fetchCosThumb(env, photo);
+    if (!upstream) return jsonResponse({ error: 'Image not found' }, 404, cors);
+    const headers = photoHeaders(cors);
+    headers.set('Content-Type', 'image/avif');
+    headers.set('Content-Disposition', 'inline');
+    const length = upstream.headers.get('Content-Length');
+    if (length) headers.set('Content-Length', length);
+    headers.set('Cache-Control', 'public, max-age=31536000, immutable');
+    headers.set('CDN-Cache-Control', 'public, max-age=31536000, immutable');
+    const response = new Response(upstream.body, { status: 200, headers });
+    if (cache) await cache.put(cacheKey, response.clone());
+    return request.method === 'HEAD' ? new Response(null, response) : response;
+  }
+
+  if (!env.photo?.get) return jsonResponse({ error: 'Photo service unavailable' }, 503, cors);
   const object = await env.photo.get(reference.key);
   if (!object) return jsonResponse({ error: 'Image not found' }, 404, cors);
   const headers = photoHeaders(cors);

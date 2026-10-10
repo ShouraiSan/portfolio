@@ -77,27 +77,67 @@ test('signed image route returns the R2 JPG bytes without Images transformation'
   clearPhotoCatalogCache();
 });
 
-test('manifest exposes a signed AVIF thumbnail while retaining the signed JPG original', async () => {
+test('manifest exposes a signed COS thumbnail while retaining the signed R2 original', async () => {
   clearPhotoCatalogCache();
   const original = {
     key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
     uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
   };
-  const avif = { key: '风光/original.avif', size: 3, httpEtag: '"etag-avif"', body: new Uint8Array([5, 6, 7]) };
   const bucket = {
     list: async () => ({ objects: [original], truncated: false }),
-    get: async (key) => key === original.key ? original : key === avif.key ? avif : null,
+    get: async (key) => key === original.key ? original : null,
   };
-  const directEnv = { ...env, photo: bucket };
+  // 缩略图改为从上海 COS 读取，这里拦截全局 fetch 模拟 COS 响应
+  const thumbBytes = new Uint8Array([5, 6, 7]);
+  const requested = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    const href = typeof input === 'string' ? input : input.url;
+    requested.push(href);
+    return new Response(thumbBytes, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
+    const manifest = await manifestResponse.json();
+    const photo = manifest.photos[0];
+    // 缩略图走 thumb 变体，并指向本站签名地址（不是裸 COS 地址）
+    assert.match(photo.thumbnail.url, /variant=thumb/);
+    assert.match(photo.thumbnail.url, /^https:\/\/kensym15\.dpdns\.org\/photo\/image\//);
+    // 灯箱原图不带 variant，仍指向 R2
+    assert.equal(new URL(photo.original.url).searchParams.has('variant'), false);
+
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers: trustedHeaders }), directEnv);
+    assert.equal(imageResponse.status, 200);
+    assert.equal(imageResponse.headers.get('content-type'), 'image/avif');
+    assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), thumbBytes);
+    // 确认确实去 COS 取图，且路径带有 thumbs/ 前缀与分类目录
+    assert.equal(requested.length > 0, true);
+    assert.match(requested[0], /^https:\/\/cos\.example\.com\/thumbs\//);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('COS thumbnail requests still require a valid signature', async () => {
+  clearPhotoCatalogCache();
+  const original = {
+    key: '风光/original.jpg', size: 4, etag: 'etag-original', httpEtag: '"etag-original"',
+    uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: new Uint8Array([1, 2, 3, 4]),
+  };
+  const bucket = {
+    list: async () => ({ objects: [original], truncated: false }),
+    get: async (key) => key === original.key ? original : null,
+  };
+  const directEnv = { ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com' };
   const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers: trustedHeaders }), directEnv);
   const manifest = await manifestResponse.json();
-  const photo = manifest.photos[0];
-  assert.match(photo.thumbnail.url, /variant=avif/);
-  assert.equal(new URL(photo.original.url).searchParams.has('variant'), false);
-  const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers: trustedHeaders }), directEnv);
-  assert.equal(imageResponse.status, 200);
-  assert.equal(imageResponse.headers.get('content-type'), 'image/avif');
-  assert.deepEqual(new Uint8Array(await imageResponse.arrayBuffer()), avif.body);
+  const thumbUrl = new URL(manifest.photos[0].thumbnail.url);
+  // 篡改签名后必须被拒绝，不能因为图在 COS 上就放行
+  thumbUrl.searchParams.set('sig', `${thumbUrl.searchParams.get('sig')}x`);
+  const denied = await worker.fetch(new Request(thumbUrl.toString(), { headers: trustedHeaders }), directEnv);
+  assert.equal(denied.status, 403);
   clearPhotoCatalogCache();
 });
 

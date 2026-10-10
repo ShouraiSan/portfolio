@@ -7,3 +7,6 @@ image-converter/.wrangler/
 .DS_Store
 .env.local
 .env.production
+
+# 一次性缩略图工具（临时脚本与产物，不进仓库）
+.photo-thumbs/

@@ -44,3 +44,9 @@ simple = { limit = 120, period = 60 }
 # 不再作为站点来源，也保留在列表内，以便直接访问该端点预览时图片仍可加载。
 ALLOWED_ORIGINS = "https://kensym15.top,https://www.kensym15.top,https://kensym-1331415098.cos-website.ap-hongkong.myqcloud.com,https://kensym-1331415098.cos.ap-hongkong.myqcloud.com,https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com,https://photo-1331415098.cos.ap-shanghai.myqcloud.com,https://kensym15.dpdns.org,https://portfolio-media.jlmafuture.workers.dev,https://shouraisan.github.io,http://127.0.0.1:5173,http://localhost:5173,null"
 PORTFOLIO_ORIGIN = "https://shouraisan.github.io/portfolio/"
+
+# 摄影页「网格缩略图」的图床：上海 COS 桶（大陆地域，外网下行单价低于香港）。
+# 只放 800px 缩略图（约 40 KB/张），原图与灯箱大图仍走 R2（流量免费）。
+# 取图仍经过本 Worker 的签名校验，因此这里用站点端点即可，无需开放桶的公共读。
+COS_THUMB_HOST = "https://photo-1331415098.cos-website.ap-shanghai.myqcloud.com"
+COS_THUMB_PREFIX = "thumbs"
