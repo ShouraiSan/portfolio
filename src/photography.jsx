@@ -3,7 +3,11 @@ import { ArrowLeft, ChevronLeft, ChevronRight, Maximize2, Minus, Plus, RotateCcw
 import { createRoot } from 'react-dom/client';
 import './styles.css';
 
-const remotePhotoBase = 'https://portfolio-media.jlmafuture.workers.dev/photo';
+// 摄影页的图片 API 入口。
+// 注意：不要用 *.workers.dev 域名 —— 它在国内不可达（请求直接超时），
+// 会导致页面能打开但照片全部加载失败。这里用 Worker 的自定义域名。
+// 该域名同时是本 Worker 的必经路由，且已在 Worker 的 ALLOWED_ORIGINS 白名单内。
+const remotePhotoBase = 'https://kensym15.dpdns.org/photo';
 const photoBase = (import.meta.env.VITE_PHOTO_API_BASE_URL || (import.meta.env.DEV ? '/photo' : remotePhotoBase)).replace(/\/$/, '');
 
 function Picture({ photo, mode, onLoad, onError }) {
