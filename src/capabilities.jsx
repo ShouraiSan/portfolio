@@ -12,7 +12,7 @@ const practices = [
 
 function Capabilities() {
   return <main className="capability-page">
-    <header className="sub-nav shell"><a className="logo" href="./">Kensym<span>®</span></a><a className="back-link" href="./"><ArrowLeft size={16}/> 返回首页</a></header>
+    <header className="sub-nav shell"><a className="logo" href="../">Kensym<span>®</span></a><a className="back-link" href="../"><ArrowLeft size={16}/> 返回首页</a></header>
     <section className="capability-hero shell">
       <p className="eyebrow">Capabilities · Creative Practice</p>
       <h1>不是工具清单，<br/><span>是一套完成作品的方法。</span></h1>

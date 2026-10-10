@@ -74,8 +74,8 @@ function App() {
       <nav className={open ? 'navlinks open' : 'navlinks'}>
         <a href="#about" onClick={() => setOpen(false)}>关于</a>
         <a href="#work" onClick={() => setOpen(false)}>作品</a>
-        <a href="./capabilities.html" onClick={() => setOpen(false)}>能力</a>
-        <a href="./photography.html" onClick={() => setOpen(false)}>摄影</a>
+        <a href="./capabilities/" onClick={() => setOpen(false)}>能力</a>
+        <a href="./photography/" onClick={() => setOpen(false)}>摄影</a>
       </nav>
       <a className="contact-link" href="#contact">联系我 <ArrowUpRight size={15}/></a>
       <button className="menu" onClick={() => setOpen(!open)} aria-label="菜单">{open ? <X/> : <Menu/>}</button>
@@ -130,7 +130,7 @@ function App() {
 
     <section className="capability-teaser section shell">
       <div className="section-kicker reveal"><span>03</span> PRACTICE / 创作方式</div>
-      <div className="teaser-row reveal"><div><p>Creative practice</p><h2>看见作品背后的<br/>思考与工作方法。</h2></div><a href="./capabilities.html">进入能力页面 <ArrowRight/></a></div>
+      <div className="teaser-row reveal"><div><p>Creative practice</p><h2>看见作品背后的<br/>思考与工作方法。</h2></div><a href="./capabilities/">进入能力页面 <ArrowRight/></a></div>
     </section>
 
     <footer className="footer" id="contact"><div className="shell footer-inner">

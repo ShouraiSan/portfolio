@@ -64,6 +64,15 @@ function stripCrossorigin() {
   }
 }
 
+// 新增页面的约定（2026-10 起）：
+//   每个页面用「目录 + index.html」的形式，而不是扁平的 <name>.html。
+//   例如新增「关于」页：建立 about/index.html，并在下面 input 里加
+//     about: resolve(import.meta.dirname, 'about/index.html'),
+//   这样线上地址是 /about/ ，没有 .html 后缀，且刷新、分享该地址都不会 404
+//   （依赖 COS 静态网站的索引文档：请求以 / 结尾时自动返回该目录下的 index.html）。
+//   注意两点：
+//     1. 子页目录里的 index.html 若引用 favicon 等根目录资源，相对路径要写成 ../
+//     2. 子页里的「返回首页」链接同样要用 ../ ，而不是 ./
 export default defineConfig({
   plugins: [react(), localPhotoApi(), stripCrossorigin()],
   base: './',
@@ -72,8 +81,8 @@ export default defineConfig({
     rollupOptions: {
       input: {
         main: resolve(import.meta.dirname, 'index.html'),
-        capabilities: resolve(import.meta.dirname, 'capabilities.html'),
-        photography: resolve(import.meta.dirname, 'photography.html'),
+        capabilities: resolve(import.meta.dirname, 'capabilities/index.html'),
+        photography: resolve(import.meta.dirname, 'photography/index.html'),
       },
     },
   },

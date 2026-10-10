@@ -361,7 +361,7 @@ function Photography() {
   };
 
   return <main className="photography-page">
-    <header className="sub-nav photo-nav shell"><a className="logo" href="./">Kensym<span>®</span></a><a className="back-link" href="./"><ArrowLeft size={16}/> 返回首页</a></header>
+    <header className="sub-nav photo-nav shell"><a className="logo" href="../">Kensym<span>®</span></a><a className="back-link" href="../"><ArrowLeft size={16}/> 返回首页</a></header>
     <section className="photo-heading shell" id="photo-top">
       <p className="photo-overline"><span>PHOTOGRAPHY</span><span>KENSYM® / 2026</span></p>
       <h1><span>摄</span><span>影</span><span className="photo-title-mark">。</span></h1>
