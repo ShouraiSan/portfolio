@@ -91,6 +91,101 @@ async function hmac(value, secret) {
   return base64Url(await crypto.subtle.sign('HMAC', key, encoder.encode(value)));
 }
 
+// ---------------------------------------------------------------------------
+// 腾讯云 COS v5 请求签名（HMAC-SHA1，与照片用的 HMAC-SHA256 不同）
+//
+// 算法照 https://cloud.tencent.com/document/product/436/7778 与官方 Node SDK
+// （cos-nodejs-sdk-v5/sdk/util.js 的 getAuth）逐条实现：
+//   1. SignKey     = HMAC-SHA1(SecretKey, KeyTime)
+//   2. FormatString= method \n pathname \n urlParams \n headers \n
+//   3. StringToSign= "sha1" \n KeyTime \n SHA1(FormatString) \n
+//   4. Signature   = HMAC-SHA1(SignKey, StringToSign)
+//
+// 关键约束：
+//   * pathname 必须是**请求里实际发送的那种 URL 编码形态**（SDK 的 UseRawKey 语义），
+//     不做解码，否则 key 含中文/空格时签名不匹配。
+//   * 参与签名的 header 名在 Authorization 里必须小写，且按小写字典序排列。
+//   * 我们只签 host 一个头，也没有 query 参数，因此两个 list 字段分别是 "host" 与 ""。
+// ---------------------------------------------------------------------------
+const COS_AUTH_EXPIRES_SECONDS = 600;
+
+// 与 SDK 的 camSafeUrlEncode 一致：encodeURIComponent 之外还要转义 ! ' ( ) *
+function camSafeUrlEncode(value) {
+  return encodeURIComponent(String(value))
+    .replace(/!/g, '%21')
+    .replace(/'/g, '%27')
+    .replace(/\(/g, '%28')
+    .replace(/\)/g, '%29')
+    .replace(/\*/g, '%2A');
+}
+
+async function hmacSha1Hex(value, key) {
+  const cryptoKey = await crypto.subtle.importKey(
+    'raw', encoder.encode(key), { name: 'HMAC', hash: 'SHA-1' }, false, ['sign'],
+  );
+  const signature = await crypto.subtle.sign('HMAC', cryptoKey, encoder.encode(value));
+  return [...new Uint8Array(signature)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function sha1Hex(value) {
+  const digest = await crypto.subtle.digest('SHA-1', encoder.encode(value));
+  return [...new Uint8Array(digest)].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+// 生成 Authorization 头。now 可注入，便于测试得到确定性结果。
+export async function cosAuthorization({ secretId, secretKey, method, host, pathname, now }) {
+  const startedAt = now ?? Math.floor(Date.now() / 1000);
+  const keyTime = `${startedAt};${startedAt + COS_AUTH_EXPIRES_SECONDS}`;
+
+  // 步骤一：SignKey
+  const signKey = await hmacSha1Hex(keyTime, secretKey);
+
+  // 步骤二：FormatString。无 query、仅签 host。
+  const formatString = [
+    String(method || 'get').toLowerCase(),
+    pathname,
+    '',        // urlParamList：无 query 参数
+    'host=' + camSafeUrlEncode(host).toLowerCase(),
+    '',
+  ].join('\n');
+
+  // 步骤三：StringToSign
+  const stringToSign = ['sha1', keyTime, await sha1Hex(formatString), ''].join('\n');
+
+  // 步骤四：Signature
+  const signature = await hmacSha1Hex(stringToSign, signKey);
+
+  // 步骤五：Authorization
+  return [
+    'q-sign-algorithm=sha1',
+    'q-ak=' + secretId,
+    'q-sign-time=' + keyTime,
+    'q-key-time=' + keyTime,
+    'q-header-list=host',
+    'q-url-param-list=',
+    'q-signature=' + signature,
+  ].join('&');
+}
+
+// 统一出口：配了 COS 只读凭据就带签名请求，未配则维持匿名请求。
+// 这样密钥注入是渐进式的 —— rollout 期间站点不会因为缺少 secret 而中断。
+async function cosFetch(env, url) {
+  const secretId = String(env.COS_SECRET_ID || '');
+  const secretKey = String(env.COS_SECRET_KEY || '');
+  const requestUrl = new URL(url);
+  const headers = { 'User-Agent': 'Kensym Portfolio Worker' };
+  if (secretId && secretKey) {
+    headers.Authorization = await cosAuthorization({
+      secretId,
+      secretKey,
+      method: 'GET',
+      host: requestUrl.host,
+      pathname: requestUrl.pathname,
+    });
+  }
+  return fetch(requestUrl, { method: 'GET', headers, signal: AbortSignal.timeout(30_000) });
+}
+
 function constantTimeEqual(left, right) {
   if (left.length !== right.length) return false;
   let mismatch = 0;
@@ -247,10 +342,7 @@ async function fetchCosOriginal(env, objectKey) {
   if (!host) return null;
   for (const key of originalKeysFor(objectKey)) {
     try {
-      const response = await fetch(`${host}/${encodePath(key)}`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(30_000),
-      });
+      const response = await cosFetch(env, `${host}/${encodePath(key)}`);
       if (response.ok && response.body) {
         const length = response.headers.get('Content-Length');
         return { body: response.body, size: length ? Number(length) : undefined, key };
@@ -282,10 +374,7 @@ async function fetchCosImage(env, photo) {
   if (!host) return null;
   for (const key of imageKeysFor(photo)) {
     try {
-      const response = await fetch(`${host}/${encodePath(key)}`, {
-        method: 'GET',
-        signal: AbortSignal.timeout(20_000),
-      });
+      const response = await cosFetch(env, `${host}/${encodePath(key)}`);
       if (response.ok && response.body) {
         const length = response.headers.get('Content-Length');
         return { body: response.body, size: length ? Number(length) : undefined };

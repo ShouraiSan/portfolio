@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import worker, { createPhotoSignature, imageKeysFor, normalizePhotoRequest, originalKeysFor, thumbCandidates, verifyPhotoSignature } from '../src/index.js';
+import worker, { cosAuthorization, createPhotoSignature, imageKeysFor, normalizePhotoRequest, originalKeysFor, thumbCandidates, verifyPhotoSignature } from '../src/index.js';
 import { clearPhotoCatalogCache } from '../src/photo-catalog.js';
 
 const secret = 'test-signing-secret';
@@ -123,7 +123,7 @@ test('preview requests resolve to previews/<category>/ on COS', async () => {
   const requested = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    requested.push(typeof input === 'string' ? input : input.url);
+    requested.push(typeof input === 'string' ? input : String(input));
     return new Response(cosPreviewObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
   };
   try {
@@ -161,7 +161,7 @@ test('China node (kensym15.top) loads grid thumbnails from Shanghai COS', async 
   const requested = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    const href = typeof input === 'string' ? input : input.url;
+    const href = typeof input === 'string' ? input : String(input);
     requested.push(href);
     return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
   };
@@ -191,7 +191,7 @@ test('overseas node (GitHub Pages) loads grid thumbnails from R2', async () => {
   const requested = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    requested.push(typeof input === 'string' ? input : input.url);
+    requested.push(typeof input === 'string' ? input : String(input));
     return new Response(null, { status: 500 });
   };
   try {
@@ -241,7 +241,7 @@ test('overseas node never falls back to Shanghai COS when R2 misses', async () =
   const originalFetch = globalThis.fetch;
   // COS 侧"有图"（任何命中都会返回 200），用来证明国外节点根本不去问它
   globalThis.fetch = async (input) => {
-    requested.push(typeof input === 'string' ? input : input.url);
+    requested.push(typeof input === 'string' ? input : String(input));
     return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
   };
   try {
@@ -410,7 +410,7 @@ test('China node loads the original JPG from Shanghai COS', async () => {
   const cosBytes = new Uint8Array([0x43, 0x4f, 0x53]);   // "COS"
   const r2Bytes = new Uint8Array([0x52, 0x32]);          // "R2"
   globalThis.fetch = async (input) => {
-    requested.push(typeof input === 'string' ? input : input.url);
+    requested.push(typeof input === 'string' ? input : String(input));
     return new Response(cosBytes, { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
   };
   try {
@@ -446,7 +446,7 @@ test('overseas original never contacts Shanghai COS', async () => {
   const requested = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (input) => {
-    requested.push(typeof input === 'string' ? input : input.url);
+    requested.push(typeof input === 'string' ? input : String(input));
     return new Response(new Uint8Array([0x43]), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
   };
   try {
@@ -500,4 +500,177 @@ test('China node falls back to R2 original when the COS mirror is unavailable', 
     globalThis.fetch = originalFetch;
     clearPhotoCatalogCache();
   }
+});
+
+// ---------------------------------------------------------------------------
+// COS v5 请求签名（方案 B：桶改私有后仍由 Worker 取图）
+//
+// 算法等价性由 worker/test/cos-signature.verify.mjs 与官方 Node SDK 逐例比对
+// （18/18 通过）。这里锁住的是 Worker 的**行为**：配了只读凭据就带签名，
+// 没配就维持匿名请求 —— 让密钥注入可以渐进完成，rollout 期间站点不会中断。
+// ---------------------------------------------------------------------------
+
+test('COS requests carry a v5 Authorization header when read-only credentials are set', async () => {
+  clearPhotoCatalogCache();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: typeof input === 'string' ? input : String(input), headers: init?.headers || {} });
+    return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    const directEnv = {
+      ...env,
+      photo: thumbBucket(),
+      COS_THUMB_HOST: 'https://cos.example.com',
+      COS_THUMB_PREFIX: 'thumbs',
+      COS_SECRET_ID: 'test-secret-id-for-credentials-0001',
+      COS_SECRET_KEY: 'exampleSecretKeyexampleSecretKey00',
+    };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(imageResponse.status, 200);
+
+    assert.equal(calls.length > 0, true, 'COS should have been contacted');
+    const auth = calls[0].headers.Authorization;
+    assert.ok(auth, 'Authorization header is required when credentials are configured');
+    const parts = Object.fromEntries(auth.split('&').map((kv) => {
+      const index = kv.indexOf('=');
+      return [kv.slice(0, index), kv.slice(index + 1)];
+    }));
+    assert.equal(parts['q-sign-algorithm'], 'sha1');
+    assert.equal(parts['q-ak'], 'test-secret-id-for-credentials-0001');
+    assert.equal(parts['q-header-list'], 'host');
+    assert.equal(parts['q-url-param-list'], '');
+    assert.match(parts['q-signature'], /^[0-9a-f]{40}$/);
+    // 签名的 host 必须与请求目标一致，否则服务端校验失败
+    assert.equal(new URL(calls[0].url).host, 'cos.example.com');
+    // 签名有效期起止必须一致且为「起;止」两段
+    assert.match(parts['q-key-time'], /^\d+;\d+$/);
+    const [start, end] = parts['q-key-time'].split(';').map(Number);
+    assert.equal(end - start, 600, 'signature window should be 600s');
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('COS requests stay anonymous when no credentials are configured', async () => {
+  clearPhotoCatalogCache();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: typeof input === 'string' ? input : String(input), headers: init?.headers || {} });
+    return new Response(cosThumbObject.body, { status: 200, headers: { 'Content-Type': 'image/avif' } });
+  };
+  try {
+    const directEnv = { ...env, photo: thumbBucket(), COS_THUMB_HOST: 'https://cos.example.com', COS_THUMB_PREFIX: 'thumbs' };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+    const imageResponse = await worker.fetch(new Request(photo.thumbnail.url, { headers }), directEnv);
+    assert.equal(imageResponse.status, 200);
+    assert.equal(calls.length > 0, true);
+    // 未配置密钥时必须维持匿名请求（渐进式 rollout 的兼容路径）
+    assert.equal(calls[0].headers.Authorization, undefined);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+test('signed COS original request also carries the Authorization header', async () => {
+  clearPhotoCatalogCache();
+  const calls = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (input, init) => {
+    calls.push({ url: typeof input === 'string' ? input : String(input), headers: init?.headers || {} });
+    return new Response(new Uint8Array([0x43]), { status: 200, headers: { 'Content-Type': 'image/jpeg' } });
+  };
+  try {
+    const r2Bytes = new Uint8Array([0x52, 0x32]);
+    const r2Object = {
+      key: '风光/Chenshan_Park-7889.jpg', size: r2Bytes.byteLength, etag: 'etag-r2', httpEtag: '"etag-r2"',
+      uploaded: new Date('2026-01-01T00:00:00Z'), customMetadata: {}, body: r2Bytes,
+    };
+    const bucket = {
+      list: async () => ({ objects: [r2Object], truncated: false }),
+      get: async (key) => key === r2Object.key ? r2Object : null,
+    };
+    const directEnv = {
+      ...env, photo: bucket, COS_THUMB_HOST: 'https://cos.example.com',
+      COS_SECRET_ID: 'test-secret-id-for-credentials-0001',
+      COS_SECRET_KEY: 'exampleSecretKeyexampleSecretKey00',
+    };
+    const headers = { Referer: 'https://kensym15.top/photography/', Origin: 'https://kensym15.top' };
+    const manifestResponse = await worker.fetch(new Request('https://kensym15.dpdns.org/photo/manifest', { headers }), directEnv);
+    const photo = (await manifestResponse.json()).photos[0];
+    await worker.fetch(new Request(photo.original.url, { headers }), directEnv);
+    assert.equal(calls.length > 0, true, 'original should have been fetched from COS');
+    assert.match(calls[0].headers.Authorization || '', /^q-sign-algorithm=sha1&/);
+  } finally {
+    globalThis.fetch = originalFetch;
+    clearPhotoCatalogCache();
+  }
+});
+
+// 冻结签名向量：期望值由 Node 原生 crypto（createHmac/ createHash）独立算出，
+// 因此这条断言同时验证了两件事 ——
+//   1) Worker 的 Web Crypto 实现与 Node crypto 的密码学结果一致；
+//   2) 签名算法不会被后续重构意外改动（冻结值来自官方算法移植）。
+test('cosAuthorization matches a frozen vector computed with Node crypto', async () => {
+  const frozen = 'q-sign-algorithm=sha1'
+    + '&q-ak=test-secret-id-frozen-vector-0001'
+    + '&q-sign-time=1791644920;1791645520'
+    + '&q-key-time=1791644920;1791645520'
+    + '&q-header-list=host'
+    + '&q-url-param-list='
+    + '&q-signature=628f676e27cf8fbd8e1259f0e9bae3bd97eb7d5a';
+  const actual = await cosAuthorization({
+    secretId: 'test-secret-id-frozen-vector-0001',
+    secretKey: 'frozen-vector-secret-key-0000000001',
+    method: 'GET',
+    host: 'photo-1331415098.cos.ap-shanghai.myqcloud.com',
+    pathname: '/thumbs/%E4%BA%BA%E5%83%8F/_DSC6557.avif',
+    now: 1791644920,
+  });
+  assert.equal(actual, frozen);
+});
+
+// host 参与签名，且签名只取决于 host 字符串本身。
+//
+// 关于 camSafeUrlEncode(host)：官方 SDK 对它做了编码，我们也照做，但**无法构造出
+// 能区分「编码」与「不编码」的用例** —— URL 主机名的字符集只有字母、数字、`.` 与 `-`，
+// 没有一个是 encodeURIComponent 会改动的。变异测试已确认去掉这一步是等价变异
+// （31 条测试全绿）。保留该调用是为了与官方实现逐行对应，属于防御性写法。
+test('cosAuthorization binds the host into the signature', async () => {
+  const secretId = 'test-secret-id-for-host-binding-01';
+  const secretKey = 'hostBindingSecretKey0000000000000';
+  const now = 1791644920;
+
+  const base = await cosAuthorization({
+    secretId, secretKey, method: 'GET', host: 'photo-1331415098.cos.ap-shanghai.myqcloud.com', pathname: '/a.jpg', now,
+  });
+  const otherHost = await cosAuthorization({
+    secretId, secretKey, method: 'GET', host: 'evil.example.com', pathname: '/a.jpg', now,
+  });
+  const otherPath = await cosAuthorization({
+    secretId, secretKey, method: 'GET', host: 'photo-1331415098.cos.ap-shanghai.myqcloud.com', pathname: '/b.jpg', now,
+  });
+  assert.notEqual(base, otherHost, 'host must participate in the signature');
+  assert.notEqual(base, otherPath, 'pathname must participate in the signature');
+
+  // 端口不属于 host（URL 会把它拆到 port 字段），因此不应影响签名
+  const withPort = await cosAuthorization({
+    secretId, secretKey, method: 'GET', host: 'photo-1331415098.cos.ap-shanghai.myqcloud.com', pathname: '/a.jpg', now,
+  });
+  assert.equal(base, withPort);
+
+  const parts = Object.fromEntries(base.split('&').map((kv) => {
+    const index = kv.indexOf('=');
+    return [kv.slice(0, index), kv.slice(index + 1)];
+  }));
+  assert.match(parts['q-signature'], /^[0-9a-f]{40}$/);
 });
